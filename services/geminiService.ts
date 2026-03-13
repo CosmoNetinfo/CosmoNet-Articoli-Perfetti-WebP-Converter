@@ -1,7 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { SeoResult, GroundingSource, SchemaArticle } from '../types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // ✅ FIX: slugify con supporto caratteri italiani e accenti
 const slugify = (text: string): string =>
@@ -303,7 +303,7 @@ ${articleText}`;
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -339,7 +339,7 @@ Tono professionale. L'articolo deve essere pronto per l'ottimizzazione SEO.`;
 
   try {
     const stream = await ai.models.generateContentStream({
-      model: "gemini-2.0-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: { tools: [{ googleSearch: {} }] },
     });
@@ -391,7 +391,7 @@ Argomento: ${topic}`;
 
   try {
     const stream = await ai.models.generateContentStream({
-      model: "gemini-2.0-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: { tools: [{ googleSearch: {} }] },
     });
@@ -434,7 +434,7 @@ ${currentResult.htmlContent}`;
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: "gemini-3-flash-preview",
       contents: prompt,
       config: { tools: [{ googleSearch: {} }] },
     });
