@@ -122,7 +122,6 @@ const responseSchema = {
       required: ["seo_title", "yoast_focus_keyword", "meta_description", "slug", "tags", "category"]
     },
 
-    // ✅ NUOVO: GEO - Generative Engine Optimization
     geo_optimization: {
       type: Type.OBJECT,
       properties: {
@@ -143,7 +142,6 @@ const responseSchema = {
       required: ["direct_answer", "entity_definitions", "key_facts"]
     },
 
-    // ✅ NUOVO: post per piattaforme multiple
     social_posts: {
       type: Type.ARRAY,
       items: {
@@ -228,7 +226,8 @@ function buildHtmlContent(result: SeoResult): string {
     });
   }
 
-  html += `<p><strong>Conclusione:</strong> ${result.html_content.conclusion}</p>\n`;
+  // ✅ FIX: Conclusione con H2 semantico invece di <strong>
+  html += `<h2 id="conclusione">Conclusione</h2>\n<p>${result.html_content.conclusion}</p>\n`;
 
   // ✅ FIX: datePublished con data reale, non inventata da Gemini
   const fullSchema = {
@@ -271,19 +270,23 @@ REGOLE SEO — ZERO TOLERANCE
 2. NO ToC: Vietato generare l'indice dei contenuti.
 3. TITOLI: Un solo <h1>. Ogni <h2> e <h3> deve avere attributo 'id' descrittivo.
 4. TABELLE: Usale SOLO per dati tabulari. MAI <table> con paragrafi dentro.
-   - ❌ SBAGLIATO: <table><p>testo</p></table>
-   - ✅ GIUSTO: <p style="border:1px solid #ddd; padding:10px;">testo</p> poi <table>...
-5. IMMAGINI: Inserisci commenti HTML <!-- [IMMAGINE: descrizione - .webp] --> nei punti strategici.
+   - SBAGLIATO: usare table con paragrafi dentro
+   - GIUSTO: usare paragrafi separati poi eventuale table solo per dati
+5. IMMAGINI: Inserisci commenti HTML nei punti strategici con formato: IMMAGINE descrizione .webp
 6. KEYWORD: La focus keyword deve apparire nel title, nel primo paragrafo, in almeno 2 H2 e nella meta.
+7. SCHEMA type: Usa SEMPRE "Article" come valore per il campo type dello schema. Mai TechArticle o BlogPosting.
+8. PRO/CONTRO: Sezioni con vantaggi e svantaggi devono usare type "list" con ogni voce su riga separata prefissata da "- ".
+9. CONCLUSIONE: Il campo conclusion deve contenere SOLO il testo del paragrafo finale, senza la parola Conclusione.
+10. LINK INTERNI: Aggiungi 2-3 link interni a cosmonet.info usando placeholder con href="/slug-articolo-correlato/" nei paragrafi pertinenti.
 
 ═══════════════════════════════
 REGOLE GEO (Generative Engine Optimization)
 ═══════════════════════════════
 
 Ottimizza per essere citato dai motori AI:
-- Fornisci una risposta diretta alla domanda principale nel campo 'direct_answer' (max 2 righe, stile featured snippet).
-- Definisci le entità principali del testo (termini tecnici, tool, concetti) in 'entity_definitions'.
-- Elenca i 5 fatti chiave più citabili da un AI in 'key_facts' (formato affermativo, dati concreti).
+- Fornisci una risposta diretta alla domanda principale nel campo direct_answer (max 2 righe, stile featured snippet).
+- Definisci le entità principali del testo (termini tecnici, tool, concetti) in entity_definitions.
+- Elenca i 5 fatti chiave più citabili da un AI in key_facts (formato affermativo, dati concreti).
 
 ═══════════════════════════════
 SOCIAL POSTS (4 piattaforme)
@@ -298,28 +301,29 @@ Autore: Cosmonet.info
 Testo Sorgente:
 ${articleText}`;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema,
-      tools: [{ googleSearch: {} }],
-    },
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema,
+        tools: [{ googleSearch: {} }],
+      },
+    });
 
-  const result: SeoResult = JSON.parse(response.text.trim());
+    const result: SeoResult = JSON.parse(response.text.trim());
 
-  // ✅ FIX: data reale
-  result.schema_markup.article.datePublished = TODAY;
+    result.schema_markup.article.datePublished = TODAY;
+    result.social_post = result.social_posts?.[0] ?? { platform: 'LinkedIn', content: '', hashtags: [] };
+    result.htmlContent = buildHtmlContent(result);
+    result.groundingSources = extractSources(response);
 
-  // Retrocompatibilità: social_post → primo elemento social_posts
-  result.social_post = result.social_posts?.[0] ?? { platform: 'LinkedIn', content: '', hashtags: [] };
-
-  result.htmlContent = buildHtmlContent(result);
-  result.groundingSources = extractSources(response);
-
-  return result;
+    return result;
+  } catch (error) {
+    console.error("Error in optimizeArticleForSeo:", error);
+    throw error;
+  }
 };
 
 // ─── researchTopicStream ──────────────────────────────────────────────────────
@@ -333,23 +337,27 @@ Effettua una ricerca approfondita su: "${topic}".
 Genera un articolo dettagliato, strutturato in paragrafi, con dati reali e fonti aggiornate.
 Tono professionale. L'articolo deve essere pronto per l'ottimizzazione SEO.`;
 
-  const stream = await ai.models.generateContentStream({
-    model: "gemini-2.0-flash",
-    contents: prompt,
-    config: { tools: [{ googleSearch: {} }] },
-  });
+  try {
+    const stream = await ai.models.generateContentStream({
+      model: "gemini-2.0-flash",
+      contents: prompt,
+      config: { tools: [{ googleSearch: {} }] },
+    });
 
-  let fullText = "";
-  let sources: GroundingSource[] = [];
+    let fullText = "";
+    let sources: GroundingSource[] = [];
 
-  for await (const chunk of stream) {
-    fullText += chunk.text || "";
-    onChunk(fullText);
-    sources = [...sources, ...extractSources(chunk)];
+    for await (const chunk of stream) {
+      fullText += chunk.text || "";
+      onChunk(fullText);
+      sources = [...sources, ...extractSources(chunk)];
+    }
+
+    return Array.from(new Map(sources.map(s => [s.uri, s])).values());
+  } catch (error) {
+    console.error("Error in researchTopicStream:", error);
+    throw error;
   }
-
-  // ✅ FIX: restituisce fonti (prima venivano scartate)
-  return Array.from(new Map(sources.map(s => [s.uri, s])).values());
 };
 
 // ─── researchWithCosmonetStream ───────────────────────────────────────────────
@@ -381,22 +389,27 @@ REGOLE:
 
 Argomento: ${topic}`;
 
-  const stream = await ai.models.generateContentStream({
-    model: "gemini-2.0-flash",
-    contents: prompt,
-    config: { tools: [{ googleSearch: {} }] },
-  });
+  try {
+    const stream = await ai.models.generateContentStream({
+      model: "gemini-2.0-flash",
+      contents: prompt,
+      config: { tools: [{ googleSearch: {} }] },
+    });
 
-  let fullText = "";
-  let sources: GroundingSource[] = [];
+    let fullText = "";
+    let sources: GroundingSource[] = [];
 
-  for await (const chunk of stream) {
-    fullText += chunk.text || "";
-    onChunk(fullText);
-    sources = [...sources, ...extractSources(chunk)];
+    for await (const chunk of stream) {
+      fullText += chunk.text || "";
+      onChunk(fullText);
+      sources = [...sources, ...extractSources(chunk)];
+    }
+
+    return Array.from(new Map(sources.map(s => [s.uri, s])).values());
+  } catch (error) {
+    console.error("Error in researchWithCosmonetStream:", error);
+    throw error;
   }
-
-  return Array.from(new Map(sources.map(s => [s.uri, s])).values());
 };
 
 // ─── enrichArticleDepth ───────────────────────────────────────────────────────
@@ -405,7 +418,6 @@ export const enrichArticleDepth = async (
   currentResult: SeoResult,
   _originalText: string
 ): Promise<SeoResult> => {
-  // ✅ FIX: arricchisce solo l'HTML senza perdere i dati strutturati
   const prompt = `Sei un Editor SEO per Cosmonet.info. Arricchisci l'HTML seguente con:
 1. Link autorevoli a fonti esterne reali e pertinenti
 2. Statistiche e dati aggiornati dove mancano
@@ -420,24 +432,28 @@ REGOLE ASSOLUTE:
 HTML da arricchire:
 ${currentResult.htmlContent}`;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash",
-    contents: prompt,
-    config: { tools: [{ googleSearch: {} }] },
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: prompt,
+      config: { tools: [{ googleSearch: {} }] },
+    });
 
-  const enrichedHtml = response.text?.trim() || currentResult.htmlContent;
-  const newSources = extractSources(response);
+    const enrichedHtml = response.text?.trim() || currentResult.htmlContent;
+    const newSources = extractSources(response);
 
-  return {
-    ...currentResult,
-    htmlContent: enrichedHtml,
-    // ✅ FIX: merge fonti invece di sovrascrivere
-    groundingSources: Array.from(
-      new Map([
-        ...(currentResult.groundingSources ?? []),
-        ...newSources
-      ].map(s => [s.uri, s])).values()
-    )
-  };
+    return {
+      ...currentResult,
+      htmlContent: enrichedHtml,
+      groundingSources: Array.from(
+        new Map([
+          ...(currentResult.groundingSources ?? []),
+          ...newSources
+        ].map(s => [s.uri, s])).values()
+      )
+    };
+  } catch (error) {
+    console.error("Error in enrichArticleDepth:", error);
+    throw error;
+  }
 };
