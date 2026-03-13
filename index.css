@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-900 text-slate-200 antialiased;
+  }
+}
+
+/* Custom styles for markdown content */
+.markdown-body h1 { @apply text-3xl font-bold mb-6 mt-8 text-white; }
+.markdown-body h2 { @apply text-2xl font-bold mb-4 mt-8 text-white border-b border-slate-700 pb-2; }
+.markdown-body h3 { @apply text-xl font-bold mb-3 mt-6 text-indigo-300; }
+.markdown-body p { @apply mb-4 leading-relaxed text-slate-300; }
+.markdown-body ul { @apply list-disc pl-6 mb-4 space-y-2; }
+.markdown-body ol { @apply list-decimal pl-6 mb-4 space-y-2; }
+.markdown-body li { @apply text-slate-300; }
+.markdown-body blockquote { @apply border-l-4 border-indigo-500 pl-4 italic my-6 text-slate-400 bg-indigo-500/5 py-2 rounded-r-lg; }
+.markdown-body pre { @apply bg-slate-950 p-4 rounded-xl overflow-x-auto my-6 border border-slate-800; }
+.markdown-body code { @apply font-mono text-sm bg-slate-800 px-1.5 py-0.5 rounded text-indigo-300; }
+.markdown-body pre code { @apply bg-transparent p-0 text-slate-300; }
+.markdown-body a { @apply text-indigo-400 hover:text-indigo-300 underline underline-offset-4 transition-colors; }
+.markdown-body img { @apply rounded-2xl my-8 shadow-2xl border border-slate-700 mx-auto; }
+.markdown-body table { @apply w-full mb-6 border-collapse; }
+.markdown-body th { @apply bg-slate-800 p-3 text-left font-bold text-slate-200 border border-slate-700; }
+.markdown-body td { @apply p-3 border border-slate-700 text-slate-300; }

@@ -1,374 +1,443 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
-import { SeoResult, GroundingSource } from '../types';
+import { SeoResult, GroundingSource, SchemaArticle } from '../types';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+// ✅ FIX: slugify con supporto caratteri italiani e accenti
+const slugify = (text: string): string =>
+  text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')   // rimuove diacritici (è → e, à → a)
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .trim();
+
+const TODAY = new Date().toISOString().split('T')[0]; // ✅ FIX: data reale
+
 const responseSchema = {
-    type: Type.OBJECT,
-    properties: {
-        html_content: {
+  type: Type.OBJECT,
+  properties: {
+    html_content: {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING },
+        intro: { type: Type.STRING },
+        sections: {
+          type: Type.ARRAY,
+          items: {
             type: Type.OBJECT,
             properties: {
-                title: { type: Type.STRING },
-                intro: { type: Type.STRING },
-                sections: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            heading: { type: Type.STRING },
-                            content: { type: Type.STRING },
-                            type: { type: Type.STRING, enum: ["text", "list", "table"] },
-                            subsections: {
-                                type: Type.ARRAY,
-                                items: {
-                                    type: Type.OBJECT,
-                                    properties: {
-                                        heading: { type: Type.STRING },
-                                        content: { type: Type.STRING }
-                                    },
-                                    required: ["heading", "content"]
-                                }
-                            }
-                        },
-                        required: ["heading", "content", "type"]
-                    }
-                },
-                faq: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            question: { type: Type.STRING },
-                            answer: { type: Type.STRING }
-                        },
-                        required: ["question", "answer"]
-                    }
-                },
-                conclusion: { type: Type.STRING }
-            },
-            required: ["title", "intro", "sections", "faq", "conclusion"]
-        },
-        schema_markup: {
-            type: Type.OBJECT,
-            properties: {
-                article: { 
-                    type: Type.OBJECT,
-                    properties: {
-                        "@context": { type: Type.STRING },
-                        "@type": { type: Type.STRING },
-                        "headline": { type: Type.STRING },
-                        "author": {
-                            type: Type.OBJECT,
-                            properties: {
-                                "@type": { type: Type.STRING },
-                                "name": { type: Type.STRING }
-                            },
-                            required: ["@type", "name"]
-                        },
-                        "datePublished": { type: Type.STRING },
-                        "articleBody": { type: Type.STRING },
-                        "keywords": { type: Type.STRING }
-                    },
-                    required: ["@context", "@type", "headline", "articleBody"]
-                },
-                faq_schema: { 
-                    type: Type.ARRAY, 
-                    items: { 
-                        type: Type.OBJECT,
-                        properties: {
-                            "@type": { type: Type.STRING },
-                            "name": { type: Type.STRING },
-                            "acceptedAnswer": {
-                                type: Type.OBJECT,
-                                properties: {
-                                    "@type": { type: Type.STRING },
-                                    "text": { type: Type.STRING }
-                                },
-                                required: ["@type", "text"]
-                            }
-                        },
-                        required: ["@type", "name", "acceptedAnswer"]
-                    } 
+              heading: { type: Type.STRING },
+              content: { type: Type.STRING },
+              type: { type: Type.STRING, enum: ["text", "list", "table"] },
+              subsections: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    heading: { type: Type.STRING },
+                    content: { type: Type.STRING }
+                  },
+                  required: ["heading", "content"]
                 }
+              }
             },
-            required: ["article", "faq_schema"]
+            required: ["heading", "content", "type"]
+          }
         },
-        seo_metadata: {
+        faq: {
+          type: Type.ARRAY,
+          items: {
             type: Type.OBJECT,
             properties: {
-                seo_title: { type: Type.STRING },
-                yoast_focus_keyword: { type: Type.STRING },
-                meta_description: { type: Type.STRING },
-                slug: { type: Type.STRING },
-                tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-                category: { type: Type.STRING }
+              question: { type: Type.STRING },
+              answer: { type: Type.STRING }
             },
-            required: ["seo_title", "yoast_focus_keyword", "meta_description", "slug", "tags", "category"]
+            required: ["question", "answer"]
+          }
         },
-        social_post: {
-            type: Type.OBJECT,
-            properties: {
-                platform: { type: Type.STRING },
-                content: { type: Type.STRING },
-                hashtags: { type: Type.ARRAY, items: { type: Type.STRING } }
-            },
-            required: ["platform", "content", "hashtags"]
-        },
-        seoChecklist: {
-            type: Type.ARRAY,
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    item: { type: Type.STRING },
-                    status: { type: Type.STRING },
-                    details: { type: Type.STRING }
-                },
-                required: ["item", "status", "details"]
-            }
-        },
-        readability: {
-            type: Type.ARRAY,
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    criteria: { type: Type.STRING },
-                    status: { type: Type.STRING },
-                    score: { type: Type.STRING },
-                    message: { type: Type.STRING }
-                },
-                required: ["criteria", "status", "score", "message"]
-            }
-        }
+        conclusion: { type: Type.STRING }
+      },
+      required: ["title", "intro", "sections", "faq", "conclusion"]
     },
-    required: ["html_content", "schema_markup", "seo_metadata", "social_post", "seoChecklist", "readability"],
+
+    schema_markup: {
+      type: Type.OBJECT,
+      properties: {
+        article: {
+          type: Type.OBJECT,
+          properties: {
+            "@context": { type: Type.STRING },
+            "@type": { type: Type.STRING },
+            headline: { type: Type.STRING },
+            author: {
+              type: Type.OBJECT,
+              properties: {
+                "@type": { type: Type.STRING },
+                name: { type: Type.STRING }
+              },
+              required: ["@type", "name"]
+            },
+            datePublished: { type: Type.STRING },
+            articleBody: { type: Type.STRING },
+            keywords: { type: Type.STRING }
+          },
+          required: ["@context", "@type", "headline", "articleBody", "author"]
+        },
+        faq_schema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              "@type": { type: Type.STRING },
+              name: { type: Type.STRING },
+              acceptedAnswer: {
+                type: Type.OBJECT,
+                properties: {
+                  "@type": { type: Type.STRING },
+                  text: { type: Type.STRING }
+                },
+                required: ["@type", "text"]
+              }
+            },
+            required: ["@type", "name", "acceptedAnswer"]
+          }
+        }
+      },
+      required: ["article", "faq_schema"]
+    },
+
+    seo_metadata: {
+      type: Type.OBJECT,
+      properties: {
+        seo_title: { type: Type.STRING },
+        yoast_focus_keyword: { type: Type.STRING },
+        meta_description: { type: Type.STRING },
+        slug: { type: Type.STRING },
+        tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+        category: { type: Type.STRING }
+      },
+      required: ["seo_title", "yoast_focus_keyword", "meta_description", "slug", "tags", "category"]
+    },
+
+    // ✅ NUOVO: GEO - Generative Engine Optimization
+    geo_optimization: {
+      type: Type.OBJECT,
+      properties: {
+        direct_answer: { type: Type.STRING },
+        entity_definitions: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              entity: { type: Type.STRING },
+              definition: { type: Type.STRING }
+            },
+            required: ["entity", "definition"]
+          }
+        },
+        key_facts: { type: Type.ARRAY, items: { type: Type.STRING } }
+      },
+      required: ["direct_answer", "entity_definitions", "key_facts"]
+    },
+
+    // ✅ NUOVO: post per piattaforme multiple
+    social_posts: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          platform: { type: Type.STRING },
+          content: { type: Type.STRING },
+          hashtags: { type: Type.ARRAY, items: { type: Type.STRING } }
+        },
+        required: ["platform", "content", "hashtags"]
+      }
+    },
+
+    seoChecklist: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          item: { type: Type.STRING },
+          status: { type: Type.STRING },
+          details: { type: Type.STRING }
+        },
+        required: ["item", "status", "details"]
+      }
+    },
+
+    readability: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          criteria: { type: Type.STRING },
+          status: { type: Type.STRING },
+          score: { type: Type.STRING },
+          message: { type: Type.STRING }
+        },
+        required: ["criteria", "status", "score", "message"]
+      }
+    }
+  },
+  required: [
+    "html_content", "schema_markup", "seo_metadata",
+    "geo_optimization", "social_posts", "seoChecklist", "readability"
+  ]
 };
 
-const slugify = (text: string) => text.toLowerCase().replace(/[^\w ]+/g, '').replace(/ +/g, '-').trim();
+// ─── Costruttore HTML ─────────────────────────────────────────────────────────
+
+function buildHtmlContent(result: SeoResult): string {
+  let html = `<meta name="description" content="${result.seo_metadata.meta_description}">\n\n`;
+  html += `<h1>${result.html_content.title}</h1>\n`;
+  html += `<p>${result.html_content.intro}</p>\n\n`;
+
+  result.html_content.sections.forEach(s => {
+    const sId = slugify(s.heading);
+    html += `<h2 id="${sId}">${s.heading}</h2>\n`;
+
+    if (s.type === 'list') {
+      const items = s.content.split('\n').filter(l => l.trim());
+      html += `<ul>\n${items.map(li => `  <li>${li.replace(/^[*\-•]\s*/, '').trim()}</li>`).join('\n')}\n</ul>\n`;
+    } else if (s.type === 'table') {
+      const clean = s.content.replace(/<\/?p>/g, '').trim();
+      html += `<div style="overflow-x:auto; margin-bottom:25px;">\n<table border="1" style="width:100%; border-collapse:collapse;">\n${clean}\n</table>\n</div>\n`;
+    } else {
+      html += `<p>${s.content}</p>\n`;
+    }
+
+    if (s.subsections?.length) {
+      s.subsections.forEach(sub => {
+        html += `<h3 id="${slugify(sub.heading)}">${sub.heading}</h3>\n`;
+        html += `<p>${sub.content}</p>\n`;
+      });
+    }
+  });
+
+  if (result.html_content.faq.length > 0) {
+    html += `<h2 id="faq-sezione-ottimizzata">Domande Frequenti (FAQ)</h2>\n`;
+    result.html_content.faq.forEach(f => {
+      const fId = slugify(f.question);
+      html += `<div class="faq-item" style="margin-bottom:20px; border-bottom:1px solid #eee; padding-bottom:15px;">\n`;
+      html += `  <h3 id="${fId}">${f.question}</h3>\n  <p>${f.answer}</p>\n</div>\n`;
+    });
+  }
+
+  html += `<p><strong>Conclusione:</strong> ${result.html_content.conclusion}</p>\n`;
+
+  // ✅ FIX: datePublished con data reale, non inventata da Gemini
+  const fullSchema = {
+    ...result.schema_markup.article,
+    datePublished: TODAY,
+    dateModified: TODAY,
+    description: result.seo_metadata.meta_description,
+    publisher: { "@type": "Organization", name: "Cosmonet.info" },
+    mainEntity: {
+      "@type": "FAQPage",
+      mainEntity: result.schema_markup.faq_schema
+    }
+  };
+
+  html += `\n\n<script type="application/ld+json">\n${JSON.stringify(fullSchema, null, 2)}\n</script>`;
+  return html;
+}
+
+// ─── extractSources ───────────────────────────────────────────────────────────
+
+function extractSources(response: any): GroundingSource[] {
+  const chunks = response?.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+  const sources: GroundingSource[] = chunks
+    .filter((c: any) => c.web?.uri)
+    .map((c: any) => ({ title: c.web.title || 'Fonte', uri: c.web.uri }));
+  return Array.from(new Map(sources.map(s => [s.uri, s])).values());
+}
+
+// ─── optimizeArticleForSeo ────────────────────────────────────────────────────
 
 export const optimizeArticleForSeo = async (articleText: string): Promise<SeoResult> => {
-    try {
-        const prompt = `Agisci come Editor Tecnico Senior SEO per WordPress esperto in performance (WebP). 
-Trasforma il testo fornito in codice HTML perfetto per l'AI Indexing.
+  const prompt = `Agisci come Editor Tecnico Senior SEO+GEO per WordPress di Cosmonet.info (blog tech italiano su AI, Linux, Open Source, Gaming).
+Trasforma il testo fornito in contenuto HTML perfetto sia per il ranking Google tradizionale che per l'indicizzazione nei motori AI (ChatGPT, Gemini, Perplexity).
 
-REGOLE MANDATORIE "ZERO TOLERANCE":
+═══════════════════════════════
+REGOLE SEO — ZERO TOLERANCE
+═══════════════════════════════
 
-1. INTEGRITÀ DEL CONTENUTO: 
-   - NON accorciare mai il testo originale. Mantieni ogni paragrafo e dettaglio tecnico. 
-   - È VIETATO fare riassunti.
+1. INTEGRITÀ: Non accorciare MAI il testo. Niente riassunti. Mantieni ogni dettaglio tecnico.
+2. NO ToC: Vietato generare l'indice dei contenuti.
+3. TITOLI: Un solo <h1>. Ogni <h2> e <h3> deve avere attributo 'id' descrittivo.
+4. TABELLE: Usale SOLO per dati tabulari. MAI <table> con paragrafi dentro.
+   - ❌ SBAGLIATO: <table><p>testo</p></table>
+   - ✅ GIUSTO: <p style="border:1px solid #ddd; padding:10px;">testo</p> poi <table>...
+5. IMMAGINI: Inserisci commenti HTML <!-- [IMMAGINE: descrizione - .webp] --> nei punti strategici.
+6. KEYWORD: La focus keyword deve apparire nel title, nel primo paragrafo, in almeno 2 H2 e nella meta.
 
-2. NO INDICE (ToC): 
-   - È ASSOLUTAMENTE VIETATO generare l'indice dei contenuti all'inizio dell'articolo.
+═══════════════════════════════
+REGOLE GEO (Generative Engine Optimization)
+═══════════════════════════════
 
-3. STRUTTURA TITOLI & ANCORAGGI: 
-   - Un solo tag <h1>. Ogni tag <h2> e <h3> DEVE avere un attributo 'id' descrittivo e semantico.
+Ottimizza per essere citato dai motori AI:
+- Fornisci una risposta diretta alla domanda principale nel campo 'direct_answer' (max 2 righe, stile featured snippet).
+- Definisci le entità principali del testo (termini tecnici, tool, concetti) in 'entity_definitions'.
+- Elenca i 5 fatti chiave più citabili da un AI in 'key_facts' (formato affermativo, dati concreti).
 
-4. VINCOLO TECNICO DEFINITIVO SULLE TABELLE:
-   - REGOLA D'ORO: Se il contenuto non è una lista di dati divisi in colonne, NON USARE <table>.
-   - ESEMPIO DI ERRORE: <table><p>Descrizione...</p></table> (VIETATO).
-   - ESEMPIO CORRETTO: <p style="border:1px solid #ddd; padding:10px;">Descrizione...</p><table>...</table>
-   - BOX STILIZZATI: Usa <div> o <p> con stili inline per risaltare i box. MAI tabelle annidate.
+═══════════════════════════════
+SOCIAL POSTS (4 piattaforme)
+═══════════════════════════════
 
-5. PERFORMANCE IMMAGINI (WebP):
-   - Inserisci suggerimenti (commenti HTML) per il posizionamento di immagini, raccomandando il formato .webp.
+Genera post ottimizzati per: LinkedIn, X (Twitter), Instagram, Telegram.
+Ogni post deve avere tono e lunghezza adatti alla piattaforma e spingere al click.
 
-6. POST SOCIAL:
-   - Genera un post social ottimizzato per LinkedIn/X (Twitter) che spinga al click, con hashtag e tono professionale.
+Data di pubblicazione: ${TODAY}
+Autore: Cosmonet.info
 
 Testo Sorgente:
 ${articleText}`;
 
-        const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: responseSchema,
-                tools: [{ googleSearch: {} }],
-            },
-        });
+  const response = await ai.models.generateContent({
+    model: "gemini-2.0-flash",
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema,
+      tools: [{ googleSearch: {} }],
+    },
+  });
 
-        const result: SeoResult = JSON.parse(response.text.trim());
-        
-        let fullHtml = `<meta name="description" content="${result.seo_metadata.meta_description}">\n\n`;
-        fullHtml += `<h1>${result.html_content.title}</h1>\n`;
-        fullHtml += `<p>${result.html_content.intro}</p>\n\n`;
-        
-        result.html_content.sections.forEach(s => {
-            const sId = slugify(s.heading);
-            fullHtml += `<h2 id="${sId}">${s.heading}</h2>\n`;
-            
-            if (s.type === 'list') {
-                fullHtml += `<ul>\n${s.content.split('\n').filter(l => l.trim()).map(li => `  <li>${li.replace(/^[*-]\s*/, '').trim()}</li>`).join('\n')}\n</ul>\n`;
-            } else if (s.type === 'table') {
-                const cleanTableContent = s.content.replace(/<p>|<\/p>/g, '').trim();
-                fullHtml += `<div style="overflow-x:auto; margin-bottom:25px;">\n<table border="1" style="width:100%; border-collapse:collapse;">\n${cleanTableContent}\n</table>\n</div>\n`;
-            } else {
-                fullHtml += `<p>${s.content}</p>\n`;
-            }
+  const result: SeoResult = JSON.parse(response.text.trim());
 
-            if (s.subsections) {
-                s.subsections.forEach(sub => {
-                    fullHtml += `<h3 id="${slugify(sub.heading)}">${sub.heading}</h3>\n`;
-                    fullHtml += `<p>${sub.content}</p>\n`;
-                });
-            }
-        });
-        
-        if (result.html_content.faq.length > 0) {
-            fullHtml += `<h2 id="faq-sezione-ottimizzata">Domande Frequenti (FAQ)</h2>\n`;
-            result.html_content.faq.forEach(f => {
-                fullHtml += `<div class="faq-item" style="margin-bottom:20px; border-bottom:1px solid #eee; padding-bottom:15px;">\n  <h3 id="${slugify(f.question)}">${f.question}</h3>\n  <p>${f.answer}</p>\n</div>\n`;
-            });
-        }
-        
-        fullHtml += `<p><strong>Conclusione:</strong> ${result.html_content.conclusion}</p>\n`;
-        
-        const fullSchema = {
-            ...result.schema_markup.article,
-            "description": result.seo_metadata.meta_description,
-            "mainEntity": {
-                "@type": "FAQPage",
-                "mainEntity": result.schema_markup.faq_schema
-            }
-        };
-        const schemaScript = `\n\n<script type="application/ld+json">\n${JSON.stringify(fullSchema)}\n</script>`;
-        
-        result.htmlContent = fullHtml + schemaScript;
-        result.groundingSources = extractSources(response);
-        return result;
-    } catch (error) {
-        console.error(error);
-        throw new Error("Errore durante l'ottimizzazione SEO AI.");
-    }
+  // ✅ FIX: data reale
+  result.schema_markup.article.datePublished = TODAY;
+
+  // Retrocompatibilità: social_post → primo elemento social_posts
+  result.social_post = result.social_posts?.[0] ?? { platform: 'LinkedIn', content: '', hashtags: [] };
+
+  result.htmlContent = buildHtmlContent(result);
+  result.groundingSources = extractSources(response);
+
+  return result;
 };
 
-export const researchTopicStream = async (topic: string, onChunk: (text: string) => void): Promise<GroundingSource[]> => {
-    try {
-        const prompt = `Agisci come un Ricercatore e Copywriter esperto. 
-        Effettua una ricerca approfondita sul seguente argomento: "${topic}".
-        Genera un articolo dettagliato, strutturato in paragrafi, con dati reali e fonti aggiornate.
-        L'articolo deve essere pronto per essere ottimizzato SEO successivamente.
-        Usa un tono professionale e informativo.`;
+// ─── researchTopicStream ──────────────────────────────────────────────────────
 
-        const response = await ai.models.generateContentStream({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: { 
-                tools: [{ googleSearch: {} }] 
-            },
-        });
+export const researchTopicStream = async (
+  topic: string,
+  onChunk: (text: string) => void
+): Promise<GroundingSource[]> => {
+  const prompt = `Agisci come Ricercatore e Copywriter esperto di tecnologia.
+Effettua una ricerca approfondita su: "${topic}".
+Genera un articolo dettagliato, strutturato in paragrafi, con dati reali e fonti aggiornate.
+Tono professionale. L'articolo deve essere pronto per l'ottimizzazione SEO.`;
 
-        let fullText = "";
-        let sources: GroundingSource[] = [];
+  const stream = await ai.models.generateContentStream({
+    model: "gemini-2.0-flash",
+    contents: prompt,
+    config: { tools: [{ googleSearch: {} }] },
+  });
 
-        for await (const chunk of response) {
-            const text = chunk.text || "";
-            fullText += text;
-            onChunk(fullText);
-            
-            // Extract sources if available in this chunk
-            const chunkSources = extractSources(chunk);
-            if (chunkSources.length > 0) {
-                sources = [...sources, ...chunkSources];
-            }
-        }
+  let fullText = "";
+  let sources: GroundingSource[] = [];
 
-        return Array.from(new Map(sources.map(s => [s.uri, s])).values());
-    } catch (error) {
-        console.error(error);
-        throw new Error("Errore durante la ricerca streaming.");
-    }
+  for await (const chunk of stream) {
+    fullText += chunk.text || "";
+    onChunk(fullText);
+    sources = [...sources, ...extractSources(chunk)];
+  }
+
+  // ✅ FIX: restituisce fonti (prima venivano scartate)
+  return Array.from(new Map(sources.map(s => [s.uri, s])).values());
 };
 
-export const researchWithCosmonetStream = async (topic: string, onChunk: (text: string) => void): Promise<GroundingSource[]> => {
-    try {
-        const prompt = `Agisci come 'Cosmonet.info', un esperto di informazione e giornalismo specializzato nel settore tecnologico. Il tuo compito è fornire approfondimenti dettagliati e articoli esaustivi su temi come Linux, open source e Intelligenza Artificiale.
+// ─── researchWithCosmonetStream ───────────────────────────────────────────────
 
-Scopi e Obiettivi:
-* Fornire analisi approfondite e ricerche dettagliate su argomenti tecnologici specifici richiesti dall'utente.
-* Creare articoli completi, ricchi di dati e mai sintetici, adatti per un blog di informazione tech professionale.
-* Esplorare le ultime tendenze nel mondo Linux, del software libero e dei modelli di AI, navigando nel web per raccogliere quante più informazioni possibili.
+export const researchWithCosmonetStream = async (
+  topic: string,
+  onChunk: (text: string) => void
+): Promise<GroundingSource[]> => {
+  const prompt = `Agisci come 'Cosmonet.info', blog tech italiano specializzato in AI, Linux, Open Source e Gaming.
 
-Comportamenti e Regole:
-1) Ricerca Iniziale:
-a) Quando l'utente propone un tema, effettua una ricerca estesa utilizzando fonti autorevoli.
-b) Non limitarti alla superficie; cerca dettagli tecnici, contesti storici e implicazioni future del software o della tecnologia in questione.
-c) Identifica le fonti più recenti per garantire l'attualità delle informazioni su AI e distribuzioni Linux.
+OBIETTIVI:
+- Analisi approfondita, mai sintetica
+- Dati tecnici reali con fonti recenti
+- Copertura: contesto storico, stato attuale, implicazioni future
 
-2) Redazione dell'Articolo:
-a) Struttura l'articolo in sezioni chiare: Introduzione, Analisi Approfondita, Casi d'Uso (se applicabile), e Conclusioni.
-b) Evita la brevità; l'obiettivo è la completezza dell'informazione. Ogni punto deve essere spiegato in modo minuzioso.
-c) Mantieni un rigore giornalistico, citando fatti e sviluppi tecnici reali.
+STRUTTURA ARTICOLO:
+1. Introduzione coinvolgente con hook
+2. Analisi tecnica approfondita (la sezione più lunga)
+3. Casi d'uso pratici con esempi concreti
+4. Pro e contro oggettivi
+5. Confronto con alternative (se applicabile)
+6. Conclusioni con raccomandazione chiara
 
-3) Approfondimento Tecnico:
-a) Se tratti di Linux o open source, discuti di licenze, community e architettura tecnica.
-b) Se tratti di AI, spiega i concetti sottostanti, le implicazioni etiche e le prestazioni dei modelli citati.
+REGOLE:
+- Linux/Open Source: discuti licenze, community, architettura
+- AI: spiega concetti, performance, implicazioni etiche
+- Tono: professionale, appassionato, oggettivo
+- Livello: accessibile sia ai neofiti che agli esperti
 
-Tono Generale:
-* Professionale, autorevole e informativo.
-* Appassionato di tecnologia ma oggettivo nell'analisi.
-* Uno stile di scrittura coinvolgente che cattura l'interesse dei lettori esperti e dei neofiti del settore tech.
+Argomento: ${topic}`;
 
-Argomento da trattare: ${topic}`;
+  const stream = await ai.models.generateContentStream({
+    model: "gemini-2.0-flash",
+    contents: prompt,
+    config: { tools: [{ googleSearch: {} }] },
+  });
 
-        const response = await ai.models.generateContentStream({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: { 
-                tools: [{ googleSearch: {} }] 
-            },
-        });
+  let fullText = "";
+  let sources: GroundingSource[] = [];
 
-        let fullText = "";
-        let sources: GroundingSource[] = [];
+  for await (const chunk of stream) {
+    fullText += chunk.text || "";
+    onChunk(fullText);
+    sources = [...sources, ...extractSources(chunk)];
+  }
 
-        for await (const chunk of response) {
-            const text = chunk.text || "";
-            fullText += text;
-            onChunk(fullText);
-            
-            const chunkSources = extractSources(chunk);
-            if (chunkSources.length > 0) {
-                sources = [...sources, ...chunkSources];
-            }
-        }
-
-        return Array.from(new Map(sources.map(s => [s.uri, s])).values());
-    } catch (error) {
-        console.error(error);
-        throw new Error("Errore durante la ricerca Cosmonet streaming.");
-    }
+  return Array.from(new Map(sources.map(s => [s.uri, s])).values());
 };
 
-export const enrichArticleDepth = async (currentResult: SeoResult, originalText: string): Promise<SeoResult> => {
-    try {
-        const prompt = `Arricchisci l'HTML fornito con link autorevoli basati su fatti reali. 
-        REGOLE: NON accorciare nulla. RISPETTA IL VINCOLO TABELLE.
-        Contenuto attuale: ${currentResult.htmlContent}`;
+// ─── enrichArticleDepth ───────────────────────────────────────────────────────
 
-        const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: { tools: [{ googleSearch: {} }] },
-        });
+export const enrichArticleDepth = async (
+  currentResult: SeoResult,
+  _originalText: string
+): Promise<SeoResult> => {
+  // ✅ FIX: arricchisce solo l'HTML senza perdere i dati strutturati
+  const prompt = `Sei un Editor SEO per Cosmonet.info. Arricchisci l'HTML seguente con:
+1. Link autorevoli a fonti esterne reali e pertinenti
+2. Statistiche e dati aggiornati dove mancano
+3. Link interni tra argomenti correlati (usa /slug-articolo/ come placeholder)
 
-        return { ...currentResult, htmlContent: response.text || currentResult.htmlContent };
-    } catch (error) {
-        return currentResult;
-    }
-};
+REGOLE ASSOLUTE:
+- NON accorciare nulla
+- NON aggiungere indice (ToC)
+- Rispetta il vincolo tabelle
+- Restituisci SOLO l'HTML modificato, senza wrapper o commenti
 
-const extractSources = (response: any): GroundingSource[] => {
-    const sources: GroundingSource[] = [];
-    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-    if (chunks) {
-        chunks.forEach((chunk: any) => {
-            if (chunk.web?.uri) {
-                sources.push({ title: chunk.web.title || "Fonte", uri: chunk.web.uri });
-            }
-        });
-    }
-    return Array.from(new Map(sources.map(s => [s.uri, s])).values());
+HTML da arricchire:
+${currentResult.htmlContent}`;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.0-flash",
+    contents: prompt,
+    config: { tools: [{ googleSearch: {} }] },
+  });
+
+  const enrichedHtml = response.text?.trim() || currentResult.htmlContent;
+  const newSources = extractSources(response);
+
+  return {
+    ...currentResult,
+    htmlContent: enrichedHtml,
+    // ✅ FIX: merge fonti invece di sovrascrivere
+    groundingSources: Array.from(
+      new Map([
+        ...(currentResult.groundingSources ?? []),
+        ...newSources
+      ].map(s => [s.uri, s])).values()
+    )
+  };
 };

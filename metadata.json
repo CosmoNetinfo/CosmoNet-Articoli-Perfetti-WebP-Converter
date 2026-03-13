@@ -1,5 +1,6 @@
+
 {
-  "name": "CosmoNet Articoli Perfetti + WebP Converter",
-  "description": "AI-powered tool per analisi SEO, HTML pulito, Local SEO e conversione WebP locale.",
+  "name": "CosmoNet Articoli Perfetti",
+  "description": "Ottimizzatore SEO + GEO per WordPress con AI. Genera articoli tecnici su Linux, Open Source e AI con ricerca web in tempo reale.",
   "requestFramePermissions": []
 }
