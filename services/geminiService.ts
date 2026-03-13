@@ -244,6 +244,104 @@ ${articleText}`;
     }
 };
 
+export const researchTopicStream = async (topic: string, onChunk: (text: string) => void): Promise<GroundingSource[]> => {
+    try {
+        const prompt = `Agisci come un Ricercatore e Copywriter esperto. 
+        Effettua una ricerca approfondita sul seguente argomento: "${topic}".
+        Genera un articolo dettagliato, strutturato in paragrafi, con dati reali e fonti aggiornate.
+        L'articolo deve essere pronto per essere ottimizzato SEO successivamente.
+        Usa un tono professionale e informativo.`;
+
+        const response = await ai.models.generateContentStream({
+            model: "gemini-3-flash-preview",
+            contents: prompt,
+            config: { 
+                tools: [{ googleSearch: {} }] 
+            },
+        });
+
+        let fullText = "";
+        let sources: GroundingSource[] = [];
+
+        for await (const chunk of response) {
+            const text = chunk.text || "";
+            fullText += text;
+            onChunk(fullText);
+            
+            // Extract sources if available in this chunk
+            const chunkSources = extractSources(chunk);
+            if (chunkSources.length > 0) {
+                sources = [...sources, ...chunkSources];
+            }
+        }
+
+        return Array.from(new Map(sources.map(s => [s.uri, s])).values());
+    } catch (error) {
+        console.error(error);
+        throw new Error("Errore durante la ricerca streaming.");
+    }
+};
+
+export const researchWithCosmonetStream = async (topic: string, onChunk: (text: string) => void): Promise<GroundingSource[]> => {
+    try {
+        const prompt = `Agisci come 'Cosmonet.info', un esperto di informazione e giornalismo specializzato nel settore tecnologico. Il tuo compito è fornire approfondimenti dettagliati e articoli esaustivi su temi come Linux, open source e Intelligenza Artificiale.
+
+Scopi e Obiettivi:
+* Fornire analisi approfondite e ricerche dettagliate su argomenti tecnologici specifici richiesti dall'utente.
+* Creare articoli completi, ricchi di dati e mai sintetici, adatti per un blog di informazione tech professionale.
+* Esplorare le ultime tendenze nel mondo Linux, del software libero e dei modelli di AI, navigando nel web per raccogliere quante più informazioni possibili.
+
+Comportamenti e Regole:
+1) Ricerca Iniziale:
+a) Quando l'utente propone un tema, effettua una ricerca estesa utilizzando fonti autorevoli.
+b) Non limitarti alla superficie; cerca dettagli tecnici, contesti storici e implicazioni future del software o della tecnologia in questione.
+c) Identifica le fonti più recenti per garantire l'attualità delle informazioni su AI e distribuzioni Linux.
+
+2) Redazione dell'Articolo:
+a) Struttura l'articolo in sezioni chiare: Introduzione, Analisi Approfondita, Casi d'Uso (se applicabile), e Conclusioni.
+b) Evita la brevità; l'obiettivo è la completezza dell'informazione. Ogni punto deve essere spiegato in modo minuzioso.
+c) Mantieni un rigore giornalistico, citando fatti e sviluppi tecnici reali.
+
+3) Approfondimento Tecnico:
+a) Se tratti di Linux o open source, discuti di licenze, community e architettura tecnica.
+b) Se tratti di AI, spiega i concetti sottostanti, le implicazioni etiche e le prestazioni dei modelli citati.
+
+Tono Generale:
+* Professionale, autorevole e informativo.
+* Appassionato di tecnologia ma oggettivo nell'analisi.
+* Uno stile di scrittura coinvolgente che cattura l'interesse dei lettori esperti e dei neofiti del settore tech.
+
+Argomento da trattare: ${topic}`;
+
+        const response = await ai.models.generateContentStream({
+            model: "gemini-3-flash-preview",
+            contents: prompt,
+            config: { 
+                tools: [{ googleSearch: {} }] 
+            },
+        });
+
+        let fullText = "";
+        let sources: GroundingSource[] = [];
+
+        for await (const chunk of response) {
+            const text = chunk.text || "";
+            fullText += text;
+            onChunk(fullText);
+            
+            const chunkSources = extractSources(chunk);
+            if (chunkSources.length > 0) {
+                sources = [...sources, ...chunkSources];
+            }
+        }
+
+        return Array.from(new Map(sources.map(s => [s.uri, s])).values());
+    } catch (error) {
+        console.error(error);
+        throw new Error("Errore durante la ricerca Cosmonet streaming.");
+    }
+};
+
 export const enrichArticleDepth = async (currentResult: SeoResult, originalText: string): Promise<SeoResult> => {
     try {
         const prompt = `Arricchisci l'HTML fornito con link autorevoli basati su fatti reali. 

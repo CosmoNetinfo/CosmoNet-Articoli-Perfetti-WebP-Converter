@@ -90,7 +90,8 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({ result, isLoading, isEnric
                     { id: 'readability', icon: SparklesIcon, label: 'Qualità' },
                     { id: 'content', icon: EyeIcon, label: 'Articolo HTML' },
                     { id: 'social', icon: ShareIcon, label: 'Post Social' },
-                    { id: 'schema', icon: CodeBracketIcon, label: 'Schema' }
+                    { id: 'schema', icon: CodeBracketIcon, label: 'Schema' },
+                    { id: 'sources', icon: BookmarkIcon, label: 'Fonti' }
                 ].map(tab => (
                     <button
                         key={tab.id}
@@ -251,6 +252,42 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({ result, isLoading, isEnric
                                 <p className="text-[11px] text-slate-400 leading-snug">{r.message}</p>
                             </div>
                         ))}
+                    </div>
+                )}
+
+                {activeTab === 'sources' && (
+                    <div className="space-y-4">
+                        <h4 className="text-sm font-bold text-indigo-400 uppercase flex items-center gap-2">
+                            <BookmarkIcon className="w-5 h-5" /> Fonti e Riferimenti Web
+                        </h4>
+                        <p className="text-xs text-slate-500 mb-4">
+                            Queste sono le fonti autorevoli utilizzate dall'IA per verificare i fatti e arricchire il contenuto durante l'ottimizzazione.
+                        </p>
+                        <div className="space-y-2">
+                            {result.groundingSources && result.groundingSources.length > 0 ? (
+                                result.groundingSources.map((source, i) => (
+                                    <a 
+                                        key={i} 
+                                        href={source.uri} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="block p-3 bg-slate-900/50 border border-slate-700 rounded-xl hover:border-indigo-500 transition-all group"
+                                    >
+                                        <div className="flex justify-between items-center">
+                                            <span className="text-sm text-slate-200 font-medium group-hover:text-indigo-400 truncate pr-4">
+                                                {source.title}
+                                            </span>
+                                            <ShareIcon className="w-4 h-4 text-slate-500 group-hover:text-indigo-400" />
+                                        </div>
+                                        <p className="text-[10px] text-slate-500 truncate mt-1">{source.uri}</p>
+                                    </a>
+                                ))
+                            ) : (
+                                <div className="text-center py-8 text-slate-500 italic text-sm">
+                                    Nessuna fonte web specifica rilevata per questo articolo.
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
             </div>

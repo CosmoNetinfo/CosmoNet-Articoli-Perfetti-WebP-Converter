@@ -2,7 +2,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { ArticleInput } from './components/ArticleInput';
 import { SeoOutput } from './components/SeoOutput';
-import { optimizeArticleForSeo, enrichArticleDepth } from './services/geminiService';
+import { optimizeArticleForSeo, enrichArticleDepth, researchTopicStream, researchWithCosmonetStream } from './services/geminiService';
 import { SeoResult, SavedSeoResult, BatchItem } from './types';
 import { SparklesIcon, ArchiveBoxIcon, TrashIcon } from './components/IconComponents';
 import { LoadModal } from './components/LoadModal';
@@ -14,6 +14,7 @@ const App: React.FC = () => {
     const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [isEnriching, setIsEnriching] = useState<boolean>(false);
+    const [isResearching, setIsResearching] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [savedArticles, setSavedArticles] = useState<SavedSeoResult[]>([]);
     const [isLoadModalOpen, setIsLoadModalOpen] = useState(false);
@@ -38,6 +39,28 @@ const App: React.FC = () => {
         setBatchQueue(prev => [...prev, newItem]);
         setArticleText('');
         if (!selectedBatchId) setSelectedBatchId(newItem.id);
+    };
+
+    const handleResearch = async (topic: string, mode: 'standard' | 'cosmonet') => {
+        setIsResearching(true);
+        setError(null);
+        setArticleText(''); // Clear previous text
+        try {
+            if (mode === 'cosmonet') {
+                await researchWithCosmonetStream(topic, (text) => {
+                    setArticleText(text);
+                });
+            } else {
+                await researchTopicStream(topic, (text) => {
+                    setArticleText(text);
+                });
+            }
+        } catch (e) {
+            console.error(e);
+            setError(`Errore durante la ricerca ${mode === 'cosmonet' ? 'Cosmonet.info' : 'standard'}.`);
+        } finally {
+            setIsResearching(false);
+        }
     };
 
     const processBatch = async () => {
@@ -134,7 +157,9 @@ const App: React.FC = () => {
                             value={articleText}
                             onChange={setArticleText}
                             onOptimize={addToQueue}
+                            onResearch={handleResearch}
                             isLoading={isLoading}
+                            isResearching={isResearching}
                             onLoadClick={() => {}}
                             savedCount={savedArticles.length}
                             lastAutoSave={null}
