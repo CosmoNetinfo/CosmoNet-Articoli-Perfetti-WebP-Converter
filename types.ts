@@ -82,7 +82,9 @@ export interface SeoResult {
 
 export interface SavedSeoResult extends SeoResult {
   id: string;
-  savedAt: string;
+  uid?: string;
+  createdAt?: any;
+  savedAt?: string;
   originalArticleText: string;
 }
 

@@ -10,12 +10,18 @@ interface LoadModalProps {
     onDelete: (articleId: string) => void;
 }
 
-// ✅ FIX: usa savedAt se disponibile, altrimenti fallback su id (timestamp)
+// ✅ FIX: usa createdAt (Firestore) o savedAt/id come fallback
 function formatDate(article: SavedSeoResult): string {
     try {
-        const ts = article.savedAt || article.id;
-        const d = new Date(isNaN(Number(ts)) ? ts : parseInt(ts));
-        return d.toLocaleDateString('it-IT', {
+        let date: Date;
+        if (article.createdAt && typeof article.createdAt.toDate === 'function') {
+            date = article.createdAt.toDate();
+        } else {
+            const ts = article.savedAt || article.id;
+            date = new Date(isNaN(Number(ts)) ? ts : parseInt(ts));
+        }
+        
+        return date.toLocaleDateString('it-IT', {
             day: '2-digit', month: 'short', year: 'numeric',
             hour: '2-digit', minute: '2-digit'
         });
@@ -32,12 +38,15 @@ export const LoadModal: React.FC<LoadModalProps> = ({
 
     const filtered = useMemo(() => {
         const q = search.toLowerCase().trim();
-        if (!q) return [...articles].reverse();
-        return [...articles].reverse().filter(a =>
-            a.html_content.title.toLowerCase().includes(q) ||
-            a.seo_metadata.yoast_focus_keyword.toLowerCase().includes(q) ||
-            a.seo_metadata.category?.toLowerCase().includes(q)
-        );
+        if (!q) return articles; // Firestore query already handles ordering
+        return articles.filter(a => {
+            const title = a.html_content?.title || a.seo_metadata?.seo_title || '';
+            const keyword = a.seo_metadata?.yoast_focus_keyword || '';
+            const category = a.seo_metadata?.category || '';
+            return title.toLowerCase().includes(q) ||
+                   keyword.toLowerCase().includes(q) ||
+                   category.toLowerCase().includes(q);
+        });
     }, [articles, search]);
 
     if (!isOpen) return null;
@@ -109,17 +118,17 @@ export const LoadModal: React.FC<LoadModalProps> = ({
                                 className="bg-slate-900/70 p-4 rounded-xl border border-slate-700 hover:border-slate-600 transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
                             >
                                 <div className="flex-grow overflow-hidden">
-                                    <p className="font-semibold text-indigo-400 truncate" title={article.html_content.title}>
-                                        {article.html_content.title}
+                                    <p className="font-semibold text-indigo-400 truncate" title={article.html_content?.title || article.seo_metadata?.seo_title}>
+                                        {article.html_content?.title || article.seo_metadata?.seo_title || 'Senza Titolo'}
                                     </p>
                                     <p className="text-xs text-slate-400 mt-0.5 truncate">
-                                        <span className="font-mono text-slate-300">{article.seo_metadata.yoast_focus_keyword}</span>
-                                        {article.seo_metadata.category && (
+                                        <span className="font-mono text-slate-300">{article.seo_metadata?.yoast_focus_keyword || 'Nessuna Keyword'}</span>
+                                        {article.seo_metadata?.category && (
                                             <span className="ml-2 text-slate-500">· {article.seo_metadata.category}</span>
                                         )}
                                     </p>
                                     <p className="text-[10px] text-slate-600 mt-1">
-                                        💾 {formatDate(article)}
+                                        ☁️ {formatDate(article)}
                                     </p>
                                 </div>
 

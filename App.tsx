@@ -4,37 +4,71 @@ import { ArticleInput } from './components/ArticleInput';
 import { SeoOutput } from './components/SeoOutput';
 import { optimizeArticleForSeo, enrichArticleDepth, researchTopicStream, researchWithCosmonetStream } from './services/geminiService';
 import { SeoResult, SavedSeoResult, BatchItem } from './types';
-import { SparklesIcon, ArchiveBoxIcon, TrashIcon } from './components/IconComponents';
+import { SparklesIcon, ArchiveBoxIcon, TrashIcon, UserIcon, LogOutIcon } from './components/IconComponents';
 import { LoadModal } from './components/LoadModal';
 import { ImageConverter } from './components/ImageConverter';
+import { auth, db, loginWithGoogle, logout } from './firebase';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { collection, query, where, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, orderBy } from 'firebase/firestore';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
-const STORAGE_KEY = 'cosmonet-articoli-perfetti-v2';
 const CONCURRENCY_LIMIT = 4;
 
-// ─── Utils ────────────────────────────────────────────────────────────────────
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
 
-function loadFromStorage(): SavedSeoResult[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
   }
 }
 
-function saveToStorage(articles: SavedSeoResult[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(articles));
-  } catch (e: any) {
-    if (e.name === 'QuotaExceededError') {
-      console.warn('⚠️ localStorage pieno. Esporta il DB per liberare spazio.');
-    }
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
   }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
+  const [user, setUser] = useState<User | null>(null);
   const [articleText, setArticleText] = useState<string>('');
   const [batchQueue, setBatchQueue] = useState<BatchItem[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
@@ -53,11 +87,39 @@ const App: React.FC = () => {
   const currentResult = currentBatchItem?.result ?? null;
   const currentError = currentBatchItem?.error ?? error;
 
-  // Carica da localStorage all'avvio
+  // ─── Firebase Auth ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const stored = loadFromStorage();
-    setSavedArticles(stored);
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
   }, []);
+
+  // ─── Firestore Sync ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!user) {
+      setSavedArticles([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'articles'),
+      where('uid', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const articles = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as SavedSeoResult[];
+      setSavedArticles(articles);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, 'articles');
+    });
+
+    return () => unsubscribe();
+  }, [user]);
 
   // ─── Batch queue ────────────────────────────────────────────────────────────
 
@@ -166,37 +228,45 @@ const App: React.FC = () => {
 
   // ─── Save / Load ─────────────────────────────────────────────────────────────
 
-  const handleSaveArticle = useCallback((finalHtml?: string) => {
+  const handleSaveArticle = useCallback(async (finalHtml?: string) => {
+    if (!user) {
+      alert("Effettua il login per salvare gli articoli nel database.");
+      loginWithGoogle();
+      return;
+    }
+
     const item = batchQueue.find(b => b.id === selectedBatchId);
     if (!item?.result) return;
 
-    const saved: SavedSeoResult = {
-      ...item.result,
-      htmlContent: finalHtml || item.result.htmlContent,
-      id: Date.now().toString(),
-      savedAt: new Date().toISOString(),
-      originalArticleText: item.text,
-    };
-
-    const updated = [...savedArticles, saved];
-    setSavedArticles(updated);
     try {
-      saveToStorage(updated);
-    } catch {
-      setStorageWarning('⚠️ Spazio localStorage esaurito. Esporta il DB per fare spazio.');
+      const articleData = {
+        uid: user.uid,
+        createdAt: serverTimestamp(),
+        ...item.result,
+        htmlContent: finalHtml || item.result.htmlContent,
+        originalArticleText: item.text,
+      };
+
+      await addDoc(collection(db, 'articles'), articleData);
+      alert("✅ Articolo salvato con successo nel database!");
+    } catch (e) {
+      handleFirestoreError(e, OperationType.CREATE, 'articles');
     }
-  }, [selectedBatchId, batchQueue, savedArticles]);
+  }, [selectedBatchId, batchQueue, user]);
 
   const handleLoadArticle = useCallback((article: SavedSeoResult) => {
-    const { id, savedAt, originalArticleText, ...resultData } = article;
+    const { id, createdAt, originalArticleText, ...resultData } = article;
     const newItem: BatchItem = {
       id: Date.now().toString(),
-      title: article.html_content.title,
-      text: originalArticleText,
+      title: article.seo_metadata?.seo_title || 'Articolo Caricato',
+      text: originalArticleText || '',
       status: 'completed',
-      result: resultData as SeoResult,
+      result: {
+        ...resultData,
+        htmlContent: resultData.html_content // mapping back if needed
+      } as any,
       progress: 100,
-      createdAt: savedAt || new Date().toISOString()
+      createdAt: typeof createdAt === 'string' ? createdAt : new Date().toISOString()
     };
     setBatchQueue(prev => [...prev, newItem]);
     setSelectedBatchId(newItem.id);
@@ -229,7 +299,6 @@ const App: React.FC = () => {
         const newOnes = imported.filter(a => !existingIds.has(a.id));
         const merged = [...savedArticles, ...newOnes];
         setSavedArticles(merged);
-        saveToStorage(merged);
         alert(`✅ Importati ${newOnes.length} articoli. ${imported.length - newOnes.length} già presenti.`);
       } catch {
         alert('❌ File non valido. Assicurati di importare un file .json esportato da questa app.');
@@ -239,11 +308,14 @@ const App: React.FC = () => {
     e.target.value = ''; // reset
   }, [savedArticles]);
 
-  const handleDeleteSaved = useCallback((id: string) => {
-    const updated = savedArticles.filter(a => a.id !== id);
-    setSavedArticles(updated);
-    saveToStorage(updated);
-  }, [savedArticles]);
+  const handleDeleteSaved = useCallback(async (id: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'articles', id));
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `articles/${id}`);
+    }
+  }, [user]);
 
   // ─── Batch stats ─────────────────────────────────────────────────────────────
 
@@ -258,7 +330,8 @@ const App: React.FC = () => {
   // ─── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="bg-slate-900 min-h-screen text-slate-200 font-sans pb-20">
+    <ErrorBoundary>
+      <div className="bg-slate-900 min-h-screen text-slate-200 font-sans pb-20">
       {/* Storage warning banner */}
       {storageWarning && (
         <div className="bg-amber-900/80 border-b border-amber-600 text-amber-200 text-xs text-center py-2 px-4 flex items-center justify-center gap-3">
@@ -280,33 +353,34 @@ const App: React.FC = () => {
               <p className="text-xs text-slate-500">SEO + GEO Optimizer · Cosmonet.info</p>
             </div>
           </div>
-          <div className="flex gap-2 flex-wrap justify-end">
-            {/* Import DB */}
-            <input
-              ref={importInputRef}
-              type="file"
-              accept=".json"
-              className="hidden"
-              onChange={handleImportDB}
-            />
-            <button
-              onClick={() => importInputRef.current?.click()}
-              className="bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all"
-            >
-              📥 Importa DB
-            </button>
-            {/* Export DB */}
-            <button
-              onClick={handleExportDB}
-              disabled={savedArticles.length === 0}
-              className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all"
-            >
-              📤 Esporta DB
-            </button>
+          <div className="flex gap-2 flex-wrap justify-end items-center">
+            {user ? (
+              <div className="flex items-center gap-3 bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-700">
+                <div className="flex flex-col items-end">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Utente</span>
+                  <span className="text-xs text-indigo-400 font-medium">{user.displayName || user.email}</span>
+                </div>
+                <button
+                  onClick={logout}
+                  className="p-2 hover:bg-red-500/20 rounded-lg text-slate-400 hover:text-red-400 transition-all"
+                  title="Esci"
+                >
+                  <LogOutIcon className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={loginWithGoogle}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all shadow-lg shadow-indigo-600/20"
+              >
+                <UserIcon className="w-4 h-4" />
+                Accedi con Google
+              </button>
+            )}
             {/* Archivio */}
             <button
               onClick={() => setIsLoadModalOpen(true)}
-              className="bg-indigo-700 hover:bg-indigo-600 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-indigo-600 transition-all"
+              className="bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all"
             >
               🗂 Archivio ({savedArticles.length})
             </button>
@@ -442,7 +516,8 @@ const App: React.FC = () => {
         onLoad={handleLoadArticle}
         onDelete={handleDeleteSaved}
       />
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 };
 

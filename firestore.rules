@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function isValidArticle(data) {
+      return data.keys().hasAll(['uid', 'createdAt', 'htmlContent']) &&
+             data.uid == request.auth.uid &&
+             data.htmlContent is string &&
+             data.htmlContent.size() > 0 &&
+             data.htmlContent.size() < 1000000; // 1MB limit
+    }
+
+    match /articles/{articleId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidArticle(request.resource.data);
+      allow update: if isDocOwner() && isValidArticle(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+    
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+  }
+}

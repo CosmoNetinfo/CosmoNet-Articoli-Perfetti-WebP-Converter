@@ -1,0 +1,30 @@
+{
+  "entities": {
+    "Article": {
+      "title": "Article",
+      "description": "A generated SEO-optimized article with metadata",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Owner user ID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "html_content": { "type": "object" },
+        "schema_markup": { "type": "object" },
+        "seo_metadata": { "type": "object" },
+        "geo_optimization": { "type": "object" },
+        "social_posts": { "type": "array" },
+        "htmlContent": { "type": "string" },
+        "seoChecklist": { "type": "array" },
+        "readability": { "type": "array" },
+        "groundingSources": { "type": "array" },
+        "originalArticleText": { "type": "string" }
+      },
+      "required": ["uid", "createdAt", "htmlContent"]
+    }
+  },
+  "firestore": {
+    "/articles/{articleId}": {
+      "schema": "Article",
+      "description": "Collection of generated articles"
+    }
+  }
+}

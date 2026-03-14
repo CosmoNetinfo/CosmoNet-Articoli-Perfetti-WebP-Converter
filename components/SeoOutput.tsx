@@ -98,7 +98,7 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
     });
   };
 
-  // ✅ NUOVO: export come file .html scaricabile
+  // ✅ Export file .html
   const handleExportHtml = () => {
     if (!result) return;
     const slug = result.seo_metadata.slug || 'articolo';
@@ -107,6 +107,35 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
     const a = document.createElement('a');
     a.href = url;
     a.download = `${slug}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ✅ Export file .json completo (HTML + SEO + GEO + Social + Schema)
+  const handleExportJson = () => {
+    if (!result) return;
+    const slug = result.seo_metadata.slug || 'articolo';
+    const exportData = {
+      exportedAt: new Date().toISOString(),
+      seo_title: result.seo_metadata.seo_title,
+      slug: result.seo_metadata.slug,
+      meta_description: result.seo_metadata.meta_description,
+      yoast_focus_keyword: result.seo_metadata.yoast_focus_keyword,
+      category: result.seo_metadata.category,
+      tags: result.seo_metadata.tags,
+      html_content: result.htmlContent,
+      schema_markup: result.schema_markup,
+      geo_optimization: result.geo_optimization,
+      social_posts: result.social_posts,
+      seoChecklist: result.seoChecklist,
+      readability: result.readability,
+      groundingSources: result.groundingSources ?? [],
+    };
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${slug}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -171,6 +200,34 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
             <tab.icon className="w-3.5 h-3.5" /> {tab.label}
           </button>
         ))}
+      </div>
+
+      {/* ── Barra download globale ── */}
+      <div className="flex items-center justify-end gap-2 px-4 py-2 bg-slate-900/30 border-b border-slate-700/30">
+        <span className="text-[10px] text-slate-500 uppercase font-bold mr-auto">
+          {result.seo_metadata.slug || 'articolo'}
+        </span>
+        <button
+          onClick={handleExportHtml}
+          className="flex items-center gap-1.5 bg-cyan-800/60 hover:bg-cyan-700/80 border border-cyan-700/50 px-3 py-1.5 rounded-lg text-cyan-300 text-[10px] font-bold uppercase transition-colors"
+          title="Scarica HTML pronto per WordPress"
+        >
+          📄 .html
+        </button>
+        <button
+          onClick={handleExportJson}
+          className="flex items-center gap-1.5 bg-violet-800/60 hover:bg-violet-700/80 border border-violet-700/50 px-3 py-1.5 rounded-lg text-violet-300 text-[10px] font-bold uppercase transition-colors"
+          title="Scarica JSON completo (HTML + SEO + GEO + Social + Schema)"
+        >
+          📦 .json
+        </button>
+        <button
+          onClick={() => onSave()}
+          className="flex items-center gap-1.5 bg-emerald-800/60 hover:bg-emerald-700/80 border border-emerald-700/50 px-3 py-1.5 rounded-lg text-emerald-300 text-[10px] font-bold uppercase transition-colors"
+          title="Salva in archivio locale"
+        >
+          🔖 Salva
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -315,12 +372,19 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
                   {codeCopied ? <CheckIcon className="w-4 h-4" /> : <ClipboardIcon className="w-4 h-4" />}
                   Copia
                 </button>
-                {/* ✅ NUOVO: download file .html */}
                 <button
                   onClick={handleExportHtml}
                   className="flex items-center gap-2 bg-cyan-700 hover:bg-cyan-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors"
+                  title="Scarica HTML pronto per WordPress"
                 >
-                  📥 Scarica .html
+                  📄 .html
+                </button>
+                <button
+                  onClick={handleExportJson}
+                  className="flex items-center gap-2 bg-violet-700 hover:bg-violet-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors"
+                  title="Scarica JSON completo"
+                >
+                  📦 .json
                 </button>
                 <button
                   onClick={() => onSave()}
