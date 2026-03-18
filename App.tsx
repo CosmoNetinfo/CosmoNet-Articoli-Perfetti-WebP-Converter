@@ -12,10 +12,13 @@ import {
 } from './firebase';
 import type { User } from 'firebase/auth';
 
+// ✅ PIPELINE IMPORTS
+import { listenForStatus, updateJobWithArticle, setJobError, PipelineJob } from './services/pipelineService';
+
 const STORAGE_KEY = 'cosmonet-articoli-perfetti-v2';
 const CONCURRENCY_LIMIT = 4;
 
-// ─── LocalStorage utils (cache offline) ──────────────────────────────────────
+// ─── LocalStorage utils ───────────────────────────────────────────────────────
 
 function loadFromStorage(): SavedSeoResult[] {
   try {
@@ -55,6 +58,13 @@ const App: React.FC = () => {
   const [cloudSyncing, setCloudSyncing] = useState(false);
   const [cloudStatus, setCloudStatus]   = useState<string | null>(null);
 
+  // ✅ PIPELINE STATE
+  const [pipelineJobs, setPipelineJobs]       = useState<PipelineJob[]>([]);
+  const [pipelineAutoMode, setPipelineAutoMode] = useState(false);
+  const [pipelineProcessingId, setPipelineProcessingId] = useState<string | null>(null);
+  const [showPipelinePanel, setShowPipelinePanel] = useState(false);
+  const pipelineProcessingIdRef = useRef<string | null>(null);
+
   // Selectors
   const currentBatchItem = selectedBatchId ? batchQueue.find(b => b.id === selectedBatchId) ?? null : null;
   const currentResult    = currentBatchItem?.result ?? null;
@@ -66,12 +76,10 @@ const App: React.FC = () => {
       setUser(u);
       setAuthLoading(false);
       if (u) {
-        // Utente loggato → carica da Firebase
         setCloudSyncing(true);
         setCloudStatus('☁️ Sincronizzazione in corso...');
         try {
           const cloud = await loadArticlesFromCloud(u.uid);
-          // ✅ FIX: normalizza htmlContent per articoli da Firebase
           const normalized = cloud.map(a => ({
             ...a,
             htmlContent: typeof a.htmlContent === 'string' ? a.htmlContent : '',
@@ -81,7 +89,7 @@ const App: React.FC = () => {
             groundingSources: a.groundingSources ?? [],
           }));
           setSavedArticles(normalized);
-          saveToStorage(normalized); // aggiorna cache locale
+          saveToStorage(normalized);
           setCloudStatus(`✅ ${cloud.length} articoli sincronizzati`);
         } catch (e) {
           setCloudStatus('⚠️ Errore sync. Uso cache locale.');
@@ -91,12 +99,112 @@ const App: React.FC = () => {
           setTimeout(() => setCloudStatus(null), 4000);
         }
       } else {
-        // Non loggato → usa localStorage
         setSavedArticles(loadFromStorage());
       }
     });
     return unsub;
   }, []);
+
+  // ✅ PIPELINE LISTENER — ascolta job con status "brief_ready"
+  useEffect(() => {
+    const unsub = listenForStatus('brief_ready', (jobs) => {
+      setPipelineJobs(jobs);
+      // Mostra il pannello automaticamente se arrivano job
+      if (jobs.length > 0) setShowPipelinePanel(true);
+    });
+    return () => unsub();
+  }, []);
+
+  // ✅ PIPELINE AUTO-PROCESSING — processa automaticamente se autoMode ON
+  useEffect(() => {
+    if (!pipelineAutoMode) return;
+    if (pipelineJobs.length === 0) return;
+    if (pipelineProcessingIdRef.current) return; // già in elaborazione
+
+    const job = pipelineJobs[0];
+    if (!job.id || !job.brief) return;
+
+    pipelineProcessingIdRef.current = job.id;
+    setPipelineProcessingId(job.id);
+
+    const process = async () => {
+      try {
+        console.log(`[Pipeline] Avvio elaborazione job: ${job.id} - "${job.title}"`);
+
+        // Usa optimizeArticleForSeo con il brief come testo di input
+        const result = await optimizeArticleForSeo(job.brief);
+
+        // Estrai l'HTML generato
+        const htmlToSave = typeof result.htmlContent === 'string' && result.htmlContent
+          ? result.htmlContent
+          : '';
+
+        if (!htmlToSave) {
+          throw new Error('HTML generato vuoto');
+        }
+
+        // Aggiorna Firestore con l'HTML
+        await updateJobWithArticle(job.id!, htmlToSave);
+
+        // Aggiungi anche alla batch queue locale per visibilità
+        const newItem: BatchItem = {
+          id: `pipeline-${job.id}`,
+          title: job.title || 'Articolo da Pipeline',
+          text: job.brief,
+          status: 'completed',
+          result,
+          progress: 100,
+          createdAt: new Date().toISOString()
+        };
+        setBatchQueue(prev => [newItem, ...prev]);
+        setSelectedBatchId(newItem.id);
+
+        console.log(`[Pipeline] Job completato: ${job.id}`);
+      } catch (err: any) {
+        console.error(`[Pipeline] Errore job ${job.id}:`, err);
+        if (job.id) await setJobError(job.id, err.message);
+      } finally {
+        pipelineProcessingIdRef.current = null;
+        setPipelineProcessingId(null);
+      }
+    };
+
+    process();
+  }, [pipelineJobs, pipelineAutoMode]);
+
+  // ✅ PIPELINE MANUAL PROCESS — processa un job manualmente
+  const processPipelineJob = async (job: PipelineJob) => {
+    if (!job.id || !job.brief || pipelineProcessingIdRef.current) return;
+
+    pipelineProcessingIdRef.current = job.id;
+    setPipelineProcessingId(job.id);
+
+    try {
+      const result = await optimizeArticleForSeo(job.brief);
+      const htmlToSave = typeof result.htmlContent === 'string' ? result.htmlContent : '';
+
+      if (!htmlToSave) throw new Error('HTML generato vuoto');
+
+      await updateJobWithArticle(job.id, htmlToSave);
+
+      const newItem: BatchItem = {
+        id: `pipeline-${job.id}`,
+        title: job.title || 'Articolo da Pipeline',
+        text: job.brief,
+        status: 'completed',
+        result,
+        progress: 100,
+        createdAt: new Date().toISOString()
+      };
+      setBatchQueue(prev => [newItem, ...prev]);
+      setSelectedBatchId(newItem.id);
+    } catch (err: any) {
+      await setJobError(job.id, err.message);
+    } finally {
+      pipelineProcessingIdRef.current = null;
+      setPipelineProcessingId(null);
+    }
+  };
 
   // ─── Auth handlers ──────────────────────────────────────────────────────────
   const handleSignIn = async () => {
@@ -185,7 +293,7 @@ const App: React.FC = () => {
     setIsLoading(false);
   };
 
-  // ─── Enrich ─────────────────────────────────────────────────────────────────
+  // ─── Enrich / QA ────────────────────────────────────────────────────────────
   const handleEnrich = async () => {
     if (!selectedBatchId || !currentResult) return;
     setIsEnriching(true);
@@ -217,13 +325,10 @@ const App: React.FC = () => {
     const item = batchQueue.find(b => b.id === selectedBatchId);
     if (!item?.result) return;
 
-    // ✅ FIX: usa finalHtml se fornito, altrimenti htmlContent del result
-    // se entrambi vuoti, non salvare un articolo senza HTML
     const htmlToSave = finalHtml
       || (typeof item.result.htmlContent === 'string' && item.result.htmlContent ? item.result.htmlContent : '');
 
     if (!htmlToSave) {
-      console.warn('⚠️ htmlContent vuoto, articolo non salvato');
       setError("Impossibile salvare: HTML articolo mancante. Rigenera l'articolo.");
       return;
     }
@@ -240,12 +345,10 @@ const App: React.FC = () => {
     setSavedArticles(updated);
 
     if (user) {
-      // Salva su Firebase
       setCloudSyncing(true);
       setCloudStatus('☁️ Salvataggio su cloud...');
       try {
         const firebaseId = await saveArticleToCloud(user.uid, saved);
-        // Aggiorna l'articolo con il firebaseId per poterlo cancellare dopo
         const withId = updated.map(a => a.id === saved.id ? { ...a, firebaseId } : a);
         setSavedArticles(withId);
         saveToStorage(withId);
@@ -258,29 +361,22 @@ const App: React.FC = () => {
         setTimeout(() => setCloudStatus(null), 3000);
       }
     } else {
-      // Solo localStorage
       try { saveToStorage(updated); }
-      catch { setStorageWarning('⚠️ Spazio localStorage esaurito. Esporta il DB per fare spazio.'); }
+      catch { setStorageWarning('⚠️ Spazio localStorage esaurito.'); }
     }
   }, [selectedBatchId, batchQueue, savedArticles, user]);
 
   // ─── Load ────────────────────────────────────────────────────────────────────
   const handleLoadArticle = useCallback((article: SavedSeoResult) => {
     const { id, savedAt, originalArticleText, ...resultData } = article;
-
-    // ✅ FIX: htmlContent potrebbe mancare su articoli da Firebase/JSON
-    // lo normalizziamo a stringa vuota se non è una stringa
     const safeResult: SeoResult = {
       ...(resultData as SeoResult),
-      htmlContent: typeof resultData.htmlContent === 'string'
-        ? resultData.htmlContent
-        : '',
+      htmlContent: typeof resultData.htmlContent === 'string' ? resultData.htmlContent : '',
       seoChecklist: resultData.seoChecklist ?? [],
       readability:  resultData.readability  ?? [],
       social_posts: resultData.social_posts ?? [],
       groundingSources: resultData.groundingSources ?? [],
     };
-
     const newItem: BatchItem = {
       id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       title: article.html_content?.title || 'Articolo caricato',
@@ -301,13 +397,9 @@ const App: React.FC = () => {
     const updated = savedArticles.filter(a => a.id !== id);
     setSavedArticles(updated);
     saveToStorage(updated);
-
     if (user && (article as any)?.firebaseId) {
-      try {
-        await deleteArticleFromCloud(user.uid, (article as any).firebaseId);
-      } catch {
-        console.warn('Errore cancellazione Firebase, rimosso solo in locale.');
-      }
+      try { await deleteArticleFromCloud(user.uid, (article as any).firebaseId); }
+      catch { console.warn('Errore cancellazione Firebase.'); }
     }
   }, [savedArticles, user]);
 
@@ -336,7 +428,6 @@ const App: React.FC = () => {
         const merged = [...savedArticles, ...newOnes];
         setSavedArticles(merged);
         saveToStorage(merged);
-
         if (user && newOnes.length > 0) {
           setCloudSyncing(true);
           setCloudStatus(`☁️ Caricamento ${newOnes.length} articoli su Firebase...`);
@@ -350,11 +441,9 @@ const App: React.FC = () => {
             setTimeout(() => setCloudStatus(null), 4000);
           }
         } else {
-          alert(`✅ Importati ${newOnes.length} articoli. ${imported.length - newOnes.length} già presenti.`);
+          alert(`✅ Importati ${newOnes.length} articoli.`);
         }
-      } catch {
-        alert('❌ File non valido.');
-      }
+      } catch { alert('❌ File non valido.'); }
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -373,7 +462,6 @@ const App: React.FC = () => {
   return (
     <div className="bg-slate-900 min-h-screen text-slate-200 font-sans pb-20">
 
-      {/* Banner storage warning */}
       {storageWarning && (
         <div className="bg-amber-900/80 border-b border-amber-600 text-amber-200 text-xs text-center py-2 px-4 flex items-center justify-center gap-3">
           {storageWarning}
@@ -382,7 +470,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Banner cloud status */}
       {cloudStatus && (
         <div className={`border-b text-xs text-center py-2 px-4 flex items-center justify-center gap-2 transition-all ${
           cloudStatus.startsWith('✅') ? 'bg-emerald-900/70 border-emerald-700 text-emerald-200' :
@@ -408,53 +495,109 @@ const App: React.FC = () => {
           </div>
           <div className="flex gap-2 flex-wrap justify-end items-center">
 
-            {/* Auth button */}
+            {/* ✅ PIPELINE BUTTON */}
+            <button
+              onClick={() => setShowPipelinePanel(!showPipelinePanel)}
+              className={`flex items-center gap-2 px-4 py-2 border rounded-xl text-xs font-bold uppercase transition-all relative ${
+                pipelineJobs.length > 0
+                  ? 'bg-cyan-900/40 border-cyan-500/50 text-cyan-300 hover:bg-cyan-900/60'
+                  : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500'
+              }`}
+            >
+              🔗 Pipeline
+              {pipelineJobs.length > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-cyan-500 text-[9px] font-bold text-slate-900 rounded-full flex items-center justify-center">
+                  {pipelineJobs.length}
+                </span>
+              )}
+            </button>
+
             {authLoading ? (
               <div className="w-5 h-5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
             ) : user ? (
               <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2">
                 <img src={user.photoURL || ''} className="w-6 h-6 rounded-full" alt="" />
                 <span className="text-xs text-slate-300 font-medium hidden md:block">{user.displayName}</span>
-                <button
-                  onClick={handleSignOut}
-                  className="text-[10px] text-slate-500 hover:text-red-400 font-bold uppercase ml-1"
-                >
-                  Esci
-                </button>
+                <button onClick={handleSignOut} className="text-[10px] text-slate-500 hover:text-red-400 font-bold uppercase ml-1">Esci</button>
               </div>
             ) : (
-              <button
-                onClick={handleSignIn}
-                className="flex items-center gap-2 bg-white hover:bg-slate-100 text-slate-800 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-300 transition-all"
-              >
+              <button onClick={handleSignIn} className="flex items-center gap-2 bg-white hover:bg-slate-100 text-slate-800 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-300 transition-all">
                 <svg className="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
                 Accedi con Google
               </button>
             )}
 
-            {/* Import DB */}
             <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={handleImportDB} />
-            <button
-              onClick={() => importInputRef.current?.click()}
-              className="bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all"
-            >
-              📥 Importa DB
-            </button>
-            <button
-              onClick={handleExportDB}
-              disabled={savedArticles.length === 0}
-              className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all"
-            >
-              📤 Esporta DB
-            </button>
-            <button
-              onClick={() => setIsLoadModalOpen(true)}
-              className="bg-indigo-700 hover:bg-indigo-600 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-indigo-600 transition-all"
-            >
-              🗂 Archivio ({savedArticles.length})
-            </button>
+            <button onClick={() => importInputRef.current?.click()} className="bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all">📥 Importa DB</button>
+            <button onClick={handleExportDB} disabled={savedArticles.length === 0} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all">📤 Esporta DB</button>
+            <button onClick={() => setIsLoadModalOpen(true)} className="bg-indigo-700 hover:bg-indigo-600 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-indigo-600 transition-all">🗂 Archivio ({savedArticles.length})</button>
           </div>
         </header>
+
+        {/* ✅ PIPELINE PANEL */}
+        {showPipelinePanel && (
+          <div className="mb-6 bg-slate-800/80 border border-cyan-500/30 rounded-2xl p-5 shadow-lg shadow-cyan-900/10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_6px_#22d3ee] animate-pulse" />
+                <h3 className="text-sm font-bold text-cyan-300 uppercase tracking-wider">Pipeline in arrivo</h3>
+                <span className="text-[10px] text-slate-500 font-mono">Brief Generator → Articoli Perfetti</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-[10px] text-slate-400 uppercase font-bold">Auto</span>
+                <button
+                  onClick={() => setPipelineAutoMode(!pipelineAutoMode)}
+                  className={`relative w-10 h-5 rounded-full transition-colors ${pipelineAutoMode ? 'bg-cyan-500' : 'bg-slate-600'}`}
+                >
+                  <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${pipelineAutoMode ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                </button>
+                <button onClick={() => setShowPipelinePanel(false)} className="text-slate-500 hover:text-slate-300 text-xs">✕</button>
+              </div>
+            </div>
+
+            {pipelineJobs.length === 0 ? (
+              <p className="text-xs text-slate-500 italic text-center py-3">Nessun brief in attesa di elaborazione.</p>
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                {pipelineJobs.map(job => (
+                  <div key={job.id} className="flex items-center justify-between gap-3 bg-slate-900/60 border border-slate-700 rounded-xl px-4 py-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-bold text-slate-200 truncate">{job.title || 'Senza titolo'}</p>
+                      <p className="text-[10px] text-slate-500 font-mono truncate mt-0.5">{job.brief?.substring(0, 80)}...</p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {pipelineProcessingId === job.id ? (
+                        <span className="flex items-center gap-1.5 text-[10px] text-cyan-400 font-bold uppercase">
+                          <span className="w-3 h-3 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                          Elaborazione...
+                        </span>
+                      ) : (
+                        !pipelineAutoMode && (
+                          <button
+                            onClick={() => processPipelineJob(job)}
+                            disabled={!!pipelineProcessingId}
+                            className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white text-[10px] font-bold uppercase rounded-lg transition-colors"
+                          >
+                            Processa
+                          </button>
+                        )
+                      )}
+                      {pipelineAutoMode && pipelineProcessingId !== job.id && (
+                        <span className="text-[10px] text-slate-500 uppercase font-bold">In coda</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p className="text-[10px] text-slate-600 mt-3 text-center">
+              {pipelineAutoMode
+                ? '⚡ Auto ON — i brief verranno elaborati automaticamente non appena arrivano'
+                : '⏸ Auto OFF — clicca "Processa" per elaborare manualmente ogni brief'}
+            </p>
+          </div>
+        )}
 
         {/* Main grid */}
         <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -491,11 +634,7 @@ const App: React.FC = () => {
                   )}
                 </div>
                 {batchStats.pending > 0 && (
-                  <button
-                    onClick={processBatch}
-                    disabled={isLoading}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-lg shadow-indigo-600/20 transition-all"
-                  >
+                  <button onClick={processBatch} disabled={isLoading} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-lg shadow-indigo-600/20 transition-all">
                     {isLoading ? 'In corso...' : `OTTIMIZZA (${batchStats.pending})`}
                   </button>
                 )}
@@ -504,19 +643,14 @@ const App: React.FC = () => {
               {batchStats.total > 0 && (
                 <div className="mb-4">
                   <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-indigo-500 transition-all duration-500"
-                      style={{ width: `${(batchStats.completed / batchStats.total) * 100}%` }}
-                    />
+                    <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${(batchStats.completed / batchStats.total) * 100}%` }} />
                   </div>
                 </div>
               )}
 
               <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
                 {batchQueue.length === 0 ? (
-                  <p className="text-xs text-slate-500 italic text-center py-4">
-                    Aggiungi articoli alla coda per iniziare.
-                  </p>
+                  <p className="text-xs text-slate-500 italic text-center py-4">Aggiungi articoli alla coda per iniziare.</p>
                 ) : (
                   batchQueue.map((item, index) => (
                     <div
@@ -538,13 +672,14 @@ const App: React.FC = () => {
                           }`}>
                             {item.status === 'processing' ? `${item.progress}%` : item.status}
                           </span>
+                          {/* Badge pipeline */}
+                          {item.id.startsWith('pipeline-') && (
+                            <span className="text-[9px] bg-cyan-900/40 text-cyan-400 border border-cyan-500/30 px-1.5 py-0.5 rounded-full font-bold uppercase">Pipeline</span>
+                          )}
                         </div>
                         {item.status === 'processing' && (
                           <div className="mt-1.5 w-full h-1 bg-slate-700 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-indigo-400 transition-all duration-500"
-                              style={{ width: `${item.progress}%` }}
-                            />
+                            <div className="h-full bg-indigo-400 transition-all duration-500" style={{ width: `${item.progress}%` }} />
                           </div>
                         )}
                       </div>

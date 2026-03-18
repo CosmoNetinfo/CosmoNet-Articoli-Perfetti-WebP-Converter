@@ -19,12 +19,33 @@
         "originalArticleText": { "type": "string" }
       },
       "required": ["uid", "createdAt", "htmlContent"]
+    },
+    "PipelineJob": {
+      "title": "PipelineJob",
+      "description": "A job in the article generation pipeline",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "brief": { "type": "string" },
+        "html": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "imageMetadata": { "type": "object" },
+        "status": { "type": "string", "enum": ["brief_ready", "article_ready", "done", "error"] },
+        "error": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["status", "title", "brief"]
     }
   },
   "firestore": {
     "/articles/{articleId}": {
       "schema": "Article",
       "description": "Collection of generated articles"
+    },
+    "/pipeline/{jobId}": {
+      "schema": "PipelineJob",
+      "description": "Jobs for the article generation pipeline"
     }
   }
 }
