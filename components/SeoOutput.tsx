@@ -10,12 +10,12 @@ interface SeoOutputProps {
   result: SeoResult | null;
   isLoading: boolean;
   isEnriching?: boolean;
+  isFixing?: boolean;
   onIncreaseDepth?: () => void;
+  onQaFix?: () => void;
   error: string | null;
   onSave: (finalHtml?: string) => void;
 }
-
-// ─── SeoDataItem ──────────────────────────────────────────────────────────────
 
 const SeoDataItem: React.FC<{ label: string; value: string; mono?: boolean; badge?: string }> = ({
   label, value, mono = false, badge
@@ -27,7 +27,7 @@ const SeoDataItem: React.FC<{ label: string; value: string; mono?: boolean; badg
       setTimeout(() => setCopied(false), 2000);
     });
   };
-  const len = value.length;
+  const len = value?.length ?? 0;
   const isTitle = label.toLowerCase().includes('titolo') || label.toLowerCase().includes('title');
   const isMeta = label.toLowerCase().includes('meta');
   const tooLong = (isTitle && len > 60) || (isMeta && len > 160);
@@ -54,9 +54,7 @@ const SeoDataItem: React.FC<{ label: string; value: string; mono?: boolean; badg
   );
 };
 
-// ─── ChecklistBadge ────────────────────────────────────────────────────────────
-
-const statusColor = {
+const statusColor: Record<string, string> = {
   pass: 'text-green-400 bg-green-400/10',
   fail: 'text-red-400 bg-red-400/10',
   manual_action: 'text-yellow-400 bg-yellow-400/10',
@@ -65,44 +63,46 @@ const statusColor = {
   needs_improvement: 'text-red-400 bg-red-400/10',
 };
 
-// ─── SeoOutput ────────────────────────────────────────────────────────────────
-
 export const SeoOutput: React.FC<SeoOutputProps> = ({
-  result, isLoading, isEnriching, onIncreaseDepth, error, onSave
+  result, isLoading, isEnriching, isFixing, onIncreaseDepth, onQaFix, error, onSave
 }) => {
   const [activeTab, setActiveTab] = useState<'seo' | 'geo' | 'readability' | 'schema' | 'content' | 'social' | 'sources'>('seo');
   const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
   const [codeCopied, setCodeCopied] = useState(false);
   const [activeSocialPlatform, setActiveSocialPlatform] = useState(0);
 
+  // ✅ FIX: htmlContent potrebbe non essere stringa su articoli da Firebase
+  const safeHtml = typeof result?.htmlContent === 'string' ? result.htmlContent : '';
+
   const wordCount = useMemo(() => {
     if (!result) return 0;
-    return result.htmlContent
+    return safeHtml
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
       .replace(/<[^>]+>/g, ' ')
       .trim()
-      .split(/\s+/).length;
-  }, [result]);
+      .split(/\s+/).filter(Boolean).length;
+  }, [result, safeHtml]);
 
   const seoScore = useMemo(() => {
     if (!result) return 0;
-    const pass = result.seoChecklist.filter(c => c.status === 'pass').length;
-    return Math.round((pass / result.seoChecklist.length) * 100);
+    const checklist = result.seoChecklist ?? [];
+    if (checklist.length === 0) return 0;
+    const pass = checklist.filter(c => c.status === 'pass').length;
+    return Math.round((pass / checklist.length) * 100);
   }, [result]);
 
   const handleCopyFullCode = () => {
     if (!result) return;
-    navigator.clipboard.writeText(result.htmlContent).then(() => {
+    navigator.clipboard.writeText(safeHtml).then(() => {
       setCodeCopied(true);
       setTimeout(() => setCodeCopied(false), 2000);
     });
   };
 
-  // ✅ Export file .html
   const handleExportHtml = () => {
     if (!result) return;
-    const slug = result.seo_metadata.slug || 'articolo';
-    const blob = new Blob([result.htmlContent], { type: 'text/html;charset=utf-8' });
+    const slug = result.seo_metadata?.slug || 'articolo';
+    const blob = new Blob([safeHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -111,24 +111,21 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  // ✅ Export file .json completo (HTML + SEO + GEO + Social + Schema)
   const handleExportJson = () => {
     if (!result) return;
-    const slug = result.seo_metadata.slug || 'articolo';
+    const slug = result.seo_metadata?.slug || 'articolo';
     const exportData = {
       exportedAt: new Date().toISOString(),
-      seo_title: result.seo_metadata.seo_title,
-      slug: result.seo_metadata.slug,
-      meta_description: result.seo_metadata.meta_description,
-      yoast_focus_keyword: result.seo_metadata.yoast_focus_keyword,
-      category: result.seo_metadata.category,
-      tags: result.seo_metadata.tags,
-      html_content: result.htmlContent,
+      // ✅ FIX: nomi campo corretti
+      htmlContent: safeHtml,                          // stringa HTML completa
+      html_content: result.html_content,              // oggetto strutturato (title/intro/sections)
+      seo_metadata: result.seo_metadata,              // tutto il blocco SEO
       schema_markup: result.schema_markup,
       geo_optimization: result.geo_optimization,
       social_posts: result.social_posts,
-      seoChecklist: result.seoChecklist,
-      readability: result.readability,
+      social_post: result.social_post,
+      seoChecklist: result.seoChecklist ?? [],
+      readability: result.readability ?? [],
       groundingSources: result.groundingSources ?? [],
     };
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -143,22 +140,22 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
   const fullSchemaJson = useMemo(() => {
     if (!result) return '';
     return JSON.stringify({
-      ...result.schema_markup.article,
+      ...result.schema_markup?.article,
       mainEntity: {
         "@type": "FAQPage",
-        mainEntity: result.schema_markup.faq_schema
+        mainEntity: result.schema_markup?.faq_schema
       }
     }, null, 2);
   }, [result]);
 
   const tabs = [
-    { id: 'seo',          icon: DocumentMagnifyingGlassIcon, label: 'SEO & Meta' },
-    { id: 'geo',          icon: SparklesIcon,                label: 'GEO / AI' },
-    { id: 'readability',  icon: CheckIcon,                   label: 'Qualità' },
-    { id: 'content',      icon: EyeIcon,                     label: 'Articolo HTML' },
-    { id: 'social',       icon: ShareIcon,                   label: 'Social' },
-    { id: 'schema',       icon: CodeBracketIcon,             label: 'Schema' },
-    { id: 'sources',      icon: BookmarkIcon,                label: 'Fonti' },
+    { id: 'seo',         icon: DocumentMagnifyingGlassIcon, label: 'SEO & Meta' },
+    { id: 'geo',         icon: SparklesIcon,                label: 'GEO / AI' },
+    { id: 'readability', icon: CheckIcon,                   label: 'Qualità' },
+    { id: 'content',     icon: EyeIcon,                     label: 'Articolo HTML' },
+    { id: 'social',      icon: ShareIcon,                   label: 'Social' },
+    { id: 'schema',      icon: CodeBracketIcon,             label: 'Schema' },
+    { id: 'sources',     icon: BookmarkIcon,                label: 'Fonti' },
   ];
 
   if (isLoading) return (
@@ -181,7 +178,7 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
     </div>
   );
 
-  const socialPosts = result.social_posts?.length ? result.social_posts : [result.social_post];
+  const socialPosts = result.social_posts?.length ? result.social_posts : (result.social_post ? [result.social_post] : []);
 
   return (
     <div className="bg-slate-800/50 rounded-2xl shadow-2xl border border-slate-700/50 flex flex-col h-full overflow-hidden">
@@ -202,40 +199,33 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
         ))}
       </div>
 
-      {/* ── Barra download globale ── */}
+      {/* Barra download globale */}
       <div className="flex items-center justify-end gap-2 px-4 py-2 bg-slate-900/30 border-b border-slate-700/30">
         <span className="text-[10px] text-slate-500 uppercase font-bold mr-auto">
-          {result.seo_metadata.slug || 'articolo'}
+          {result.seo_metadata?.slug || 'articolo'}
         </span>
-        <button
-          onClick={handleExportHtml}
+        <button onClick={handleExportHtml}
           className="flex items-center gap-1.5 bg-cyan-800/60 hover:bg-cyan-700/80 border border-cyan-700/50 px-3 py-1.5 rounded-lg text-cyan-300 text-[10px] font-bold uppercase transition-colors"
-          title="Scarica HTML pronto per WordPress"
-        >
+          title="Scarica HTML pronto per WordPress">
           📄 .html
         </button>
-        <button
-          onClick={handleExportJson}
+        <button onClick={handleExportJson}
           className="flex items-center gap-1.5 bg-violet-800/60 hover:bg-violet-700/80 border border-violet-700/50 px-3 py-1.5 rounded-lg text-violet-300 text-[10px] font-bold uppercase transition-colors"
-          title="Scarica JSON completo (HTML + SEO + GEO + Social + Schema)"
-        >
+          title="Scarica JSON completo">
           📦 .json
         </button>
-        <button
-          onClick={() => onSave()}
+        <button onClick={() => onSave()}
           className="flex items-center gap-1.5 bg-emerald-800/60 hover:bg-emerald-700/80 border border-emerald-700/50 px-3 py-1.5 rounded-lg text-emerald-300 text-[10px] font-bold uppercase transition-colors"
-          title="Salva in archivio locale"
-        >
+          title="Salva in archivio">
           🔖 Salva
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
 
-        {/* ── TAB: SEO & Meta ── */}
+        {/* TAB: SEO & Meta */}
         {activeTab === 'seo' && (
           <div className="space-y-4">
-            {/* Score cards */}
             <div className="grid grid-cols-3 gap-4">
               <div className="bg-indigo-900/20 p-4 rounded-xl border border-indigo-500/20 text-center">
                 <h4 className="text-[10px] uppercase font-bold text-indigo-300 mb-1">SEO Score</h4>
@@ -247,29 +237,31 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
                 <h4 className="text-[10px] uppercase font-bold text-slate-400 mb-1">Parole</h4>
                 <p className={`text-2xl font-bold ${wordCount >= 1000 ? 'text-green-400' : 'text-yellow-400'}`}>{wordCount}</p>
               </div>
-              <button
-                onClick={onIncreaseDepth}
-                disabled={isEnriching}
-                className="bg-indigo-600 text-white px-2 py-2 rounded-xl text-[10px] font-bold uppercase hover:bg-indigo-500 transition-colors"
-              >
-                {isEnriching ? '⏳ Cercando...' : '🔗 Trova Fonti'}
-              </button>
+              <div className="flex flex-col gap-2">
+                <button onClick={onIncreaseDepth} disabled={isEnriching || isFixing}
+                  className="bg-indigo-600 text-white px-2 py-2 rounded-xl text-[10px] font-bold uppercase hover:bg-indigo-500 transition-colors disabled:opacity-50">
+                  {isEnriching ? '⏳ Cercando...' : '🔗 Trova Fonti'}
+                </button>
+                <button onClick={onQaFix} disabled={isEnriching || isFixing}
+                  className="bg-emerald-600 text-white px-2 py-2 rounded-xl text-[10px] font-bold uppercase hover:bg-emerald-500 transition-colors disabled:opacity-50">
+                  {isFixing ? '⏳ Fix...' : '🛠️ QA & Fix'}
+                </button>
+              </div>
             </div>
 
-            <SeoDataItem label="Titolo SEO (H1 / CTR)" value={result.seo_metadata.seo_title} />
-            <SeoDataItem label="Focus Keyword (Yoast)" value={result.seo_metadata.yoast_focus_keyword} mono />
-            <SeoDataItem label="Slug URL" value={result.seo_metadata.slug} mono />
-            <SeoDataItem label="Meta Description" value={result.seo_metadata.meta_description} />
+            <SeoDataItem label="Titolo SEO (H1 / CTR)" value={result.seo_metadata?.seo_title ?? ''} />
+            <SeoDataItem label="Focus Keyword (Yoast)" value={result.seo_metadata?.yoast_focus_keyword ?? ''} mono />
+            <SeoDataItem label="Slug URL" value={result.seo_metadata?.slug ?? ''} mono />
+            <SeoDataItem label="Meta Description" value={result.seo_metadata?.meta_description ?? ''} />
             <div className="grid grid-cols-2 gap-4">
-              <SeoDataItem label="Categoria" value={result.seo_metadata.category} />
-              <SeoDataItem label="Tag SEO" value={result.seo_metadata.tags.join(', ')} />
+              <SeoDataItem label="Categoria" value={result.seo_metadata?.category ?? ''} />
+              <SeoDataItem label="Tag SEO" value={(result.seo_metadata?.tags ?? []).join(', ')} />
             </div>
 
-            {/* SEO Checklist */}
             <div>
               <h4 className="text-xs font-bold text-slate-400 uppercase mb-3">Checklist SEO</h4>
               <div className="space-y-2">
-                {result.seoChecklist.map((item, i) => (
+                {(result.seoChecklist ?? []).map((item, i) => (
                   <div key={i} className="bg-slate-900/30 p-3 rounded-xl border border-slate-700/30 flex items-start gap-3">
                     <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full flex-shrink-0 mt-0.5 ${statusColor[item.status] || 'text-slate-400 bg-slate-700'}`}>
                       {item.status === 'pass' ? '✓' : item.status === 'fail' ? '✗' : '⚠'}
@@ -285,54 +277,74 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
           </div>
         )}
 
-        {/* ── TAB: GEO / AI ── */}
+        {/* TAB: GEO / AI */}
         {activeTab === 'geo' && (
           <div className="space-y-6">
-            <div className="bg-indigo-900/20 border border-indigo-500/30 rounded-xl p-4">
-              <h4 className="text-xs font-bold text-indigo-300 uppercase mb-2 flex items-center gap-2">
-                🤖 Risposta Diretta (Featured Snippet / AI Citation)
-              </h4>
-              <p className="text-slate-200 text-sm leading-relaxed">
-                {result.geo_optimization?.direct_answer || 'Non disponibile'}
-              </p>
-              <button
-                onClick={() => navigator.clipboard.writeText(result.geo_optimization?.direct_answer || '')}
-                className="mt-2 text-[10px] text-indigo-400 hover:text-indigo-300 font-bold uppercase"
-              >
-                Copia
-              </button>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-indigo-900/20 border border-indigo-500/30 rounded-xl p-4">
+                <h4 className="text-xs font-bold text-indigo-300 uppercase mb-2">🤖 Risposta Diretta (Featured Snippet)</h4>
+                <p className="text-slate-200 text-sm leading-relaxed">
+                  {result.geo_optimization?.direct_answer || 'Non disponibile'}
+                </p>
+                <button onClick={() => navigator.clipboard.writeText(result.geo_optimization?.direct_answer || '')}
+                  className="mt-2 text-[10px] text-indigo-400 hover:text-indigo-300 font-bold uppercase">
+                  Copia
+                </button>
+              </div>
+              <div className="bg-emerald-900/20 border border-emerald-500/30 rounded-xl p-4">
+                <h4 className="text-xs font-bold text-emerald-300 uppercase mb-2">🏆 Authoritative Claim (AI Citation)</h4>
+                <p className="text-slate-200 text-sm leading-relaxed italic">
+                  "{result.geo_optimization?.authoritative_claim || 'Non disponibile'}"
+                </p>
+                <button onClick={() => navigator.clipboard.writeText(result.geo_optimization?.authoritative_claim || '')}
+                  className="mt-2 text-[10px] text-emerald-400 hover:text-emerald-300 font-bold uppercase">
+                  Copia
+                </button>
+              </div>
             </div>
-
             <div>
               <h4 className="text-xs font-bold text-slate-400 uppercase mb-3">Entità e Definizioni</h4>
               <div className="space-y-2">
-                {result.geo_optimization?.entity_definitions?.map((e, i) => (
+                {(result.geo_optimization?.entity_definitions ?? []).map((e, i) => (
                   <div key={i} className="bg-slate-900/40 p-3 rounded-xl border border-slate-700/30">
-                    <span className="text-indigo-400 font-bold text-xs">{e.entity}</span>
-                    <p className="text-slate-300 text-sm mt-1">{e.definition}</p>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-indigo-400 font-bold text-xs">{e.entity}</span>
+                      <span className="text-[10px] text-slate-500 uppercase font-bold">{e.category}</span>
+                    </div>
+                    <p className="text-slate-300 text-sm">{e.definition}</p>
                   </div>
-                )) || <p className="text-slate-500 text-sm italic">Nessuna entità rilevata.</p>}
+                ))}
               </div>
             </div>
-
             <div>
               <h4 className="text-xs font-bold text-slate-400 uppercase mb-3">Key Facts (citabili da AI)</h4>
               <div className="space-y-2">
-                {result.geo_optimization?.key_facts?.map((fact, i) => (
+                {(result.geo_optimization?.key_facts ?? []).map((fact, i) => (
                   <div key={i} className="flex items-start gap-2 bg-slate-900/40 p-3 rounded-xl border border-slate-700/30">
                     <span className="text-cyan-400 font-bold text-xs mt-0.5 flex-shrink-0">#{i + 1}</span>
                     <p className="text-slate-200 text-sm">{fact}</p>
                   </div>
-                )) || <p className="text-slate-500 text-sm italic">Nessun fatto chiave rilevato.</p>}
+                ))}
+              </div>
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-slate-400 uppercase mb-3">FAQ Schema (Featured Snippets)</h4>
+              <div className="space-y-3">
+                {(result.schema_markup?.faq_schema ?? []).map((faq, i) => (
+                  <div key={i} className="bg-slate-900/40 p-3 rounded-xl border border-slate-700/30">
+                    <p className="text-indigo-300 font-bold text-xs mb-1">Q: {faq.name}</p>
+                    <p className="text-slate-300 text-sm">A: {faq.acceptedAnswer.text}</p>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
         )}
 
-        {/* ── TAB: Qualità ── */}
+        {/* TAB: Qualità */}
         {activeTab === 'readability' && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {result.readability.map((r, i) => (
+            {(result.readability ?? []).map((r, i) => (
               <div key={i} className="bg-slate-900/30 p-4 rounded-xl border border-slate-700/30">
                 <div className="flex justify-between items-center mb-1">
                   <span className="text-xs font-bold text-slate-200">{r.criteria}</span>
@@ -346,51 +358,35 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
           </div>
         )}
 
-        {/* ── TAB: Articolo HTML ── */}
+        {/* TAB: Articolo HTML */}
         {activeTab === 'content' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-700">
-                <button
-                  onClick={() => setViewMode('preview')}
-                  className={`px-4 py-1.5 text-[10px] font-bold rounded-md transition-all ${viewMode === 'preview' ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}
-                >
+                <button onClick={() => setViewMode('preview')}
+                  className={`px-4 py-1.5 text-[10px] font-bold rounded-md transition-all ${viewMode === 'preview' ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}>
                   ANTEPRIMA
                 </button>
-                <button
-                  onClick={() => setViewMode('code')}
-                  className={`px-4 py-1.5 text-[10px] font-bold rounded-md transition-all ${viewMode === 'code' ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}
-                >
+                <button onClick={() => setViewMode('code')}
+                  className={`px-4 py-1.5 text-[10px] font-bold rounded-md transition-all ${viewMode === 'code' ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}>
                   CODICE HTML
                 </button>
               </div>
               <div className="flex gap-2">
-                <button
-                  onClick={handleCopyFullCode}
-                  className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors"
-                >
-                  {codeCopied ? <CheckIcon className="w-4 h-4" /> : <ClipboardIcon className="w-4 h-4" />}
-                  Copia
+                <button onClick={handleCopyFullCode}
+                  className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors">
+                  {codeCopied ? <CheckIcon className="w-4 h-4" /> : <ClipboardIcon className="w-4 h-4" />} Copia
                 </button>
-                <button
-                  onClick={handleExportHtml}
-                  className="flex items-center gap-2 bg-cyan-700 hover:bg-cyan-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors"
-                  title="Scarica HTML pronto per WordPress"
-                >
+                <button onClick={handleExportHtml}
+                  className="flex items-center gap-2 bg-cyan-700 hover:bg-cyan-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors">
                   📄 .html
                 </button>
-                <button
-                  onClick={handleExportJson}
-                  className="flex items-center gap-2 bg-violet-700 hover:bg-violet-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors"
-                  title="Scarica JSON completo"
-                >
+                <button onClick={handleExportJson}
+                  className="flex items-center gap-2 bg-violet-700 hover:bg-violet-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors">
                   📦 .json
                 </button>
-                <button
-                  onClick={() => onSave()}
-                  title="Salva in archivio"
-                  className="bg-emerald-600 p-2 rounded-xl text-white hover:bg-emerald-500 transition-colors"
-                >
+                <button onClick={() => onSave()} title="Salva in archivio"
+                  className="bg-emerald-600 p-2 rounded-xl text-white hover:bg-emerald-500 transition-colors">
                   <BookmarkIcon className="w-5 h-5" />
                 </button>
               </div>
@@ -416,40 +412,34 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
                     code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:monospace;font-size:0.9em;}
                     pre{background:#1e293b;color:#e2e8f0;padding:20px;border-radius:12px;overflow-x:auto;}
                     script{display:none;}
-                  </style></head><body>${result.htmlContent}</body></html>`}
+                  </style></head><body>${safeHtml}</body></html>`}
                   className="w-full h-[600px]"
                   title="Anteprima articolo"
                 />
               ) : (
                 <div className="p-6 bg-slate-950 h-[600px] overflow-auto font-mono text-[11px] text-emerald-400 whitespace-pre-wrap leading-relaxed">
-                  {result.htmlContent}
+                  {safeHtml}
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {/* ── TAB: Social ── */}
+        {/* TAB: Social */}
         {activeTab === 'social' && (
           <div className="space-y-4">
-            {/* Platform selector */}
             <div className="flex gap-2 flex-wrap">
               {socialPosts.map((post, i) => (
-                <button
-                  key={i}
-                  onClick={() => setActiveSocialPlatform(i)}
+                <button key={i} onClick={() => setActiveSocialPlatform(i)}
                   className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all border ${
                     activeSocialPlatform === i
                       ? 'bg-indigo-600 border-indigo-500 text-white'
                       : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500'
-                  }`}
-                >
+                  }`}>
                   {post.platform}
                 </button>
               ))}
             </div>
-
-            {/* Active post */}
             {socialPosts[activeSocialPlatform] && (() => {
               const post = socialPosts[activeSocialPlatform];
               const fullText = `${post.content}\n\n${post.hashtags.join(' ')}`;
@@ -466,21 +456,15 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
                           <p className="text-[10px] text-slate-500">Draft generato dall'AI</p>
                         </div>
                       </div>
-                      <button
-                        onClick={() => navigator.clipboard.writeText(fullText)}
-                        className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors"
-                      >
+                      <button onClick={() => navigator.clipboard.writeText(fullText)}
+                        className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-xl text-white text-[10px] font-bold uppercase transition-colors">
                         <ClipboardIcon className="w-4 h-4" /> Copia
                       </button>
                     </div>
-                    <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap mb-4">
-                      {post.content}
-                    </p>
+                    <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap mb-4">{post.content}</p>
                     <div className="flex flex-wrap gap-2">
                       {post.hashtags.map((tag, i) => (
-                        <span key={i} className="text-indigo-400 text-xs font-medium hover:underline cursor-pointer">
-                          {tag}
-                        </span>
+                        <span key={i} className="text-indigo-400 text-xs font-medium hover:underline cursor-pointer">{tag}</span>
                       ))}
                     </div>
                   </div>
@@ -493,15 +477,13 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
           </div>
         )}
 
-        {/* ── TAB: Schema JSON-LD ── */}
+        {/* TAB: Schema JSON-LD */}
         {activeTab === 'schema' && (
           <div className="space-y-4">
             <div className="flex justify-between items-center">
               <h4 className="text-xs font-bold text-slate-400 uppercase">Dati Strutturati JSON-LD</h4>
-              <button
-                onClick={() => navigator.clipboard.writeText(fullSchemaJson)}
-                className="text-indigo-400 text-[10px] font-bold uppercase hover:text-indigo-300"
-              >
+              <button onClick={() => navigator.clipboard.writeText(fullSchemaJson)}
+                className="text-indigo-400 text-[10px] font-bold uppercase hover:text-indigo-300">
                 Copia Schema
               </button>
             </div>
@@ -511,29 +493,20 @@ export const SeoOutput: React.FC<SeoOutputProps> = ({
           </div>
         )}
 
-        {/* ── TAB: Fonti ── */}
+        {/* TAB: Fonti */}
         {activeTab === 'sources' && (
           <div className="space-y-4">
             <h4 className="text-sm font-bold text-indigo-400 uppercase flex items-center gap-2">
               <BookmarkIcon className="w-5 h-5" /> Fonti e Riferimenti Web
             </h4>
-            <p className="text-xs text-slate-500">
-              Fonti autorevoli usate da Gemini per verificare fatti e arricchire il contenuto.
-            </p>
+            <p className="text-xs text-slate-500">Fonti autorevoli usate da Gemini per verificare fatti e arricchire il contenuto.</p>
             <div className="space-y-2">
-              {result.groundingSources && result.groundingSources.length > 0 ? (
-                result.groundingSources.map((source, i) => (
-                  <a
-                    key={i}
-                    href={source.uri}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block p-3 bg-slate-900/50 border border-slate-700 rounded-xl hover:border-indigo-500 transition-all group"
-                  >
+              {(result.groundingSources ?? []).length > 0 ? (
+                (result.groundingSources ?? []).map((source, i) => (
+                  <a key={i} href={source.uri} target="_blank" rel="noopener noreferrer"
+                    className="block p-3 bg-slate-900/50 border border-slate-700 rounded-xl hover:border-indigo-500 transition-all group">
                     <div className="flex justify-between items-center">
-                      <span className="text-sm text-slate-200 font-medium group-hover:text-indigo-400 truncate pr-4">
-                        {source.title}
-                      </span>
+                      <span className="text-sm text-slate-200 font-medium group-hover:text-indigo-400 truncate pr-4">{source.title}</span>
                       <ShareIcon className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 flex-shrink-0" />
                     </div>
                     <p className="text-[10px] text-slate-500 truncate mt-1">{source.uri}</p>

@@ -68,8 +68,9 @@ export interface SeoResult {
   };
   geo_optimization: {
     direct_answer: string;
-    entity_definitions: { entity: string; definition: string }[];
+    entity_definitions: { entity: string; definition: string; category: string }[];
     key_facts: string[];
+    authoritative_claim: string;
   };
   social_posts: SocialPost[];
   /** @deprecated use social_posts */
@@ -82,6 +83,7 @@ export interface SeoResult {
 
 export interface SavedSeoResult extends SeoResult {
   id: string;
+  firebaseId?: string;
   uid?: string;
   createdAt?: any;
   savedAt?: string;

@@ -112,9 +112,9 @@ export const LoadModal: React.FC<LoadModalProps> = ({
                             {search ? 'Nessun articolo trovato per questa ricerca.' : 'Non ci sono articoli salvati.'}
                         </p>
                     ) : (
-                        filtered.map((article) => (
+                        filtered.map((article, index) => (
                             <div
-                                key={article.id}
+                                key={article.firebaseId || article.id || `article-${index}`}
                                 className="bg-slate-900/70 p-4 rounded-xl border border-slate-700 hover:border-slate-600 transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
                             >
                                 <div className="flex-grow overflow-hidden">

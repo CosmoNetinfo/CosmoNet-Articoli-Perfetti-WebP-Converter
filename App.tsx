@@ -1,131 +1,119 @@
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { ArticleInput } from './components/ArticleInput';
 import { SeoOutput } from './components/SeoOutput';
-import { optimizeArticleForSeo, enrichArticleDepth, researchTopicStream, researchWithCosmonetStream } from './services/geminiService';
+import { optimizeArticleForSeo, enrichArticleDepth, researchTopicStream, researchWithCosmonetStream, qaAndFixHtml } from './services/geminiService';
 import { SeoResult, SavedSeoResult, BatchItem } from './types';
-import { SparklesIcon, ArchiveBoxIcon, TrashIcon, UserIcon, LogOutIcon } from './components/IconComponents';
+import { SparklesIcon, ArchiveBoxIcon, TrashIcon } from './components/IconComponents';
 import { LoadModal } from './components/LoadModal';
 import { ImageConverter } from './components/ImageConverter';
-import { auth, db, loginWithGoogle, logout } from './firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, query, where, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, orderBy } from 'firebase/firestore';
-import { ErrorBoundary } from './components/ErrorBoundary';
+import {
+  signInWithGoogle, signOut, onAuthChange,
+  saveArticleToCloud, loadArticlesFromCloud, deleteArticleFromCloud
+} from './firebase';
+import type { User } from 'firebase/auth';
 
+const STORAGE_KEY = 'cosmonet-articoli-perfetti-v2';
 const CONCURRENCY_LIMIT = 4;
 
-export enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
+// ─── LocalStorage utils (cache offline) ──────────────────────────────────────
+
+function loadFromStorage(): SavedSeoResult[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
 }
 
-export interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId: string | undefined;
-    email: string | null | undefined;
-    emailVerified: boolean | undefined;
-    isAnonymous: boolean | undefined;
-    tenantId: string | null | undefined;
-    providerInfo: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
+function saveToStorage(articles: SavedSeoResult[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(articles));
+  } catch (e: any) {
+    if (e.name === 'QuotaExceededError') console.warn('⚠️ localStorage pieno.');
   }
-}
-
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
-  const [user, setUser] = useState<User | null>(null);
-  const [articleText, setArticleText] = useState<string>('');
-  const [batchQueue, setBatchQueue] = useState<BatchItem[]>([]);
+  const [articleText, setArticleText]     = useState<string>('');
+  const [batchQueue, setBatchQueue]       = useState<BatchItem[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isEnriching, setIsEnriching] = useState<boolean>(false);
+  const [isLoading, setIsLoading]         = useState<boolean>(false);
+  const [isEnriching, setIsEnriching]     = useState<boolean>(false);
+  const [isFixing, setIsFixing]           = useState<boolean>(false);
   const [isResearching, setIsResearching] = useState<boolean>(false);
   const [researchSources, setResearchSources] = useState<{ title: string; uri: string }[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]                 = useState<string | null>(null);
   const [savedArticles, setSavedArticles] = useState<SavedSeoResult[]>([]);
   const [isLoadModalOpen, setIsLoadModalOpen] = useState(false);
-  const [storageWarning, setStorageWarning] = useState<string | null>(null);
+  const [storageWarning, setStorageWarning]   = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Firebase Auth ──────────────────────────────────────────────────────────
+  const [user, setUser]           = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [cloudSyncing, setCloudSyncing] = useState(false);
+  const [cloudStatus, setCloudStatus]   = useState<string | null>(null);
 
   // Selectors
   const currentBatchItem = selectedBatchId ? batchQueue.find(b => b.id === selectedBatchId) ?? null : null;
-  const currentResult = currentBatchItem?.result ?? null;
-  const currentError = currentBatchItem?.error ?? error;
+  const currentResult    = currentBatchItem?.result ?? null;
+  const currentError     = currentBatchItem?.error ?? error;
 
-  // ─── Firebase Auth ──────────────────────────────────────────────────────────
+  // ─── Auth listener ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
+    const unsub = onAuthChange(async (u) => {
+      setUser(u);
+      setAuthLoading(false);
+      if (u) {
+        // Utente loggato → carica da Firebase
+        setCloudSyncing(true);
+        setCloudStatus('☁️ Sincronizzazione in corso...');
+        try {
+          const cloud = await loadArticlesFromCloud(u.uid);
+          // ✅ FIX: normalizza htmlContent per articoli da Firebase
+          const normalized = cloud.map(a => ({
+            ...a,
+            htmlContent: typeof a.htmlContent === 'string' ? a.htmlContent : '',
+            seoChecklist: a.seoChecklist ?? [],
+            readability:  a.readability  ?? [],
+            social_posts: a.social_posts ?? [],
+            groundingSources: a.groundingSources ?? [],
+          }));
+          setSavedArticles(normalized);
+          saveToStorage(normalized); // aggiorna cache locale
+          setCloudStatus(`✅ ${cloud.length} articoli sincronizzati`);
+        } catch (e) {
+          setCloudStatus('⚠️ Errore sync. Uso cache locale.');
+          setSavedArticles(loadFromStorage());
+        } finally {
+          setCloudSyncing(false);
+          setTimeout(() => setCloudStatus(null), 4000);
+        }
+      } else {
+        // Non loggato → usa localStorage
+        setSavedArticles(loadFromStorage());
+      }
     });
-    return () => unsubscribe();
+    return unsub;
   }, []);
 
-  // ─── Firestore Sync ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!user) {
-      setSavedArticles([]);
-      return;
-    }
+  // ─── Auth handlers ──────────────────────────────────────────────────────────
+  const handleSignIn = async () => {
+    try { await signInWithGoogle(); }
+    catch (e) { setError('Accesso Google fallito. Riprova.'); }
+  };
 
-    const q = query(
-      collection(db, 'articles'),
-      where('uid', '==', user.uid),
-      orderBy('createdAt', 'desc')
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const articles = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as SavedSeoResult[];
-      setSavedArticles(articles);
-    }, (err) => {
-      handleFirestoreError(err, OperationType.LIST, 'articles');
-    });
-
-    return () => unsubscribe();
-  }, [user]);
+  const handleSignOut = async () => {
+    await signOut();
+    setSavedArticles(loadFromStorage());
+    setCloudStatus(null);
+  };
 
   // ─── Batch queue ────────────────────────────────────────────────────────────
-
   const addToQueue = () => {
     if (!articleText.trim()) return;
-    const id = Date.now().toString();
+    const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const preview = articleText.substring(0, 60).trim();
     const newItem: BatchItem = {
       id,
@@ -150,7 +138,6 @@ const App: React.FC = () => {
   };
 
   // ─── Research ───────────────────────────────────────────────────────────────
-
   const handleResearch = async (topic: string, mode: 'standard' | 'cosmonet') => {
     setIsResearching(true);
     setError(null);
@@ -158,10 +145,9 @@ const App: React.FC = () => {
     setResearchSources([]);
     try {
       const fn = mode === 'cosmonet' ? researchWithCosmonetStream : researchTopicStream;
-      // ✅ FIX: salviamo le fonti restituite dalla ricerca
       const sources = await fn(topic, (text) => setArticleText(text));
       setResearchSources(sources);
-    } catch (e) {
+    } catch {
       setError(`Errore durante la ricerca ${mode === 'cosmonet' ? 'Cosmonet' : 'standard'}.`);
     } finally {
       setIsResearching(false);
@@ -169,7 +155,6 @@ const App: React.FC = () => {
   };
 
   // ─── Process batch ──────────────────────────────────────────────────────────
-
   const processBatch = async () => {
     setIsLoading(true);
     setError(null);
@@ -177,34 +162,23 @@ const App: React.FC = () => {
 
     for (let i = 0; i < pending.length; i += CONCURRENCY_LIMIT) {
       const chunk = pending.slice(i, i + CONCURRENCY_LIMIT);
-
       await Promise.all(chunk.map(async (item) => {
         updateItem(item.id, { status: 'processing', progress: 10 });
         try {
-          // Simula progresso visivo mentre Gemini lavora
           const progressInterval = setInterval(() => {
             setBatchQueue(prev => prev.map(b =>
               b.id === item.id && b.progress < 85
-                ? { ...b, progress: b.progress + 5 }
-                : b
+                ? { ...b, progress: b.progress + 5 } : b
             ));
           }, 800);
-
           const result = await optimizeArticleForSeo(item.text);
           clearInterval(progressInterval);
-          // ✅ Aggiorna anche il titolo con quello generato da Gemini
           updateItem(item.id, {
-            status: 'completed',
-            progress: 100,
-            result,
+            status: 'completed', progress: 100, result,
             title: result.html_content.title || item.title
           });
-        } catch (e) {
-          updateItem(item.id, {
-            status: 'error',
-            progress: 0,
-            error: "Errore durante l'ottimizzazione."
-          });
+        } catch {
+          updateItem(item.id, { status: 'error', progress: 0, error: "Errore durante l'ottimizzazione." });
         }
       }));
     }
@@ -212,7 +186,6 @@ const App: React.FC = () => {
   };
 
   // ─── Enrich ─────────────────────────────────────────────────────────────────
-
   const handleEnrich = async () => {
     if (!selectedBatchId || !currentResult) return;
     setIsEnriching(true);
@@ -220,61 +193,125 @@ const App: React.FC = () => {
       const enriched = await enrichArticleDepth(currentResult, '');
       updateItem(selectedBatchId, { result: enriched });
     } catch {
-      setError('Errore durante l\'arricchimento con fonti.');
+      setError("Errore durante l'arricchimento con fonti.");
     } finally {
       setIsEnriching(false);
     }
   };
 
-  // ─── Save / Load ─────────────────────────────────────────────────────────────
-
-  const handleSaveArticle = useCallback(async (finalHtml?: string) => {
-    if (!user) {
-      alert("Effettua il login per salvare gli articoli nel database.");
-      loginWithGoogle();
-      return;
+  const handleQaFix = async () => {
+    if (!selectedBatchId || !currentResult) return;
+    setIsFixing(true);
+    try {
+      const fixed = await qaAndFixHtml(currentResult);
+      updateItem(selectedBatchId, { result: fixed });
+    } catch {
+      setError("Errore durante il QA & Fix strutturale.");
+    } finally {
+      setIsFixing(false);
     }
+  };
 
+  // ─── Save ────────────────────────────────────────────────────────────────────
+  const handleSaveArticle = useCallback(async (finalHtml?: string) => {
     const item = batchQueue.find(b => b.id === selectedBatchId);
     if (!item?.result) return;
 
-    try {
-      const articleData = {
-        uid: user.uid,
-        createdAt: serverTimestamp(),
-        ...item.result,
-        htmlContent: finalHtml || item.result.htmlContent,
-        originalArticleText: item.text,
-      };
+    // ✅ FIX: usa finalHtml se fornito, altrimenti htmlContent del result
+    // se entrambi vuoti, non salvare un articolo senza HTML
+    const htmlToSave = finalHtml
+      || (typeof item.result.htmlContent === 'string' && item.result.htmlContent ? item.result.htmlContent : '');
 
-      await addDoc(collection(db, 'articles'), articleData);
-      alert("✅ Articolo salvato con successo nel database!");
-    } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, 'articles');
+    if (!htmlToSave) {
+      console.warn('⚠️ htmlContent vuoto, articolo non salvato');
+      setError("Impossibile salvare: HTML articolo mancante. Rigenera l'articolo.");
+      return;
     }
-  }, [selectedBatchId, batchQueue, user]);
 
+    const saved: SavedSeoResult = {
+      ...item.result,
+      htmlContent: htmlToSave,
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      savedAt: new Date().toISOString(),
+      originalArticleText: item.text,
+    };
+
+    const updated = [...savedArticles, saved];
+    setSavedArticles(updated);
+
+    if (user) {
+      // Salva su Firebase
+      setCloudSyncing(true);
+      setCloudStatus('☁️ Salvataggio su cloud...');
+      try {
+        const firebaseId = await saveArticleToCloud(user.uid, saved);
+        // Aggiorna l'articolo con il firebaseId per poterlo cancellare dopo
+        const withId = updated.map(a => a.id === saved.id ? { ...a, firebaseId } : a);
+        setSavedArticles(withId);
+        saveToStorage(withId);
+        setCloudStatus('✅ Salvato su Firebase');
+      } catch {
+        setCloudStatus('⚠️ Errore cloud, salvato solo in locale');
+        saveToStorage(updated);
+      } finally {
+        setCloudSyncing(false);
+        setTimeout(() => setCloudStatus(null), 3000);
+      }
+    } else {
+      // Solo localStorage
+      try { saveToStorage(updated); }
+      catch { setStorageWarning('⚠️ Spazio localStorage esaurito. Esporta il DB per fare spazio.'); }
+    }
+  }, [selectedBatchId, batchQueue, savedArticles, user]);
+
+  // ─── Load ────────────────────────────────────────────────────────────────────
   const handleLoadArticle = useCallback((article: SavedSeoResult) => {
-    const { id, createdAt, originalArticleText, ...resultData } = article;
+    const { id, savedAt, originalArticleText, ...resultData } = article;
+
+    // ✅ FIX: htmlContent potrebbe mancare su articoli da Firebase/JSON
+    // lo normalizziamo a stringa vuota se non è una stringa
+    const safeResult: SeoResult = {
+      ...(resultData as SeoResult),
+      htmlContent: typeof resultData.htmlContent === 'string'
+        ? resultData.htmlContent
+        : '',
+      seoChecklist: resultData.seoChecklist ?? [],
+      readability:  resultData.readability  ?? [],
+      social_posts: resultData.social_posts ?? [],
+      groundingSources: resultData.groundingSources ?? [],
+    };
+
     const newItem: BatchItem = {
-      id: Date.now().toString(),
-      title: article.seo_metadata?.seo_title || 'Articolo Caricato',
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      title: article.html_content?.title || 'Articolo caricato',
       text: originalArticleText || '',
       status: 'completed',
-      result: {
-        ...resultData,
-        htmlContent: resultData.html_content // mapping back if needed
-      } as any,
+      result: safeResult,
       progress: 100,
-      createdAt: typeof createdAt === 'string' ? createdAt : new Date().toISOString()
+      createdAt: savedAt || new Date().toISOString()
     };
     setBatchQueue(prev => [...prev, newItem]);
     setSelectedBatchId(newItem.id);
     setIsLoadModalOpen(false);
   }, []);
 
-  // ─── Export / Import DB ─────────────────────────────────────────────────────
+  // ─── Delete ──────────────────────────────────────────────────────────────────
+  const handleDeleteSaved = useCallback(async (id: string) => {
+    const article = savedArticles.find(a => a.id === id);
+    const updated = savedArticles.filter(a => a.id !== id);
+    setSavedArticles(updated);
+    saveToStorage(updated);
 
+    if (user && (article as any)?.firebaseId) {
+      try {
+        await deleteArticleFromCloud(user.uid, (article as any).firebaseId);
+      } catch {
+        console.warn('Errore cancellazione Firebase, rimosso solo in locale.');
+      }
+    }
+  }, [savedArticles, user]);
+
+  // ─── Export / Import DB ─────────────────────────────────────────────────────
   const handleExportDB = useCallback(() => {
     if (savedArticles.length === 0) return;
     const blob = new Blob([JSON.stringify(savedArticles, null, 2)], { type: 'application/json' });
@@ -290,54 +327,70 @@ const App: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
         const imported: SavedSeoResult[] = JSON.parse(ev.target?.result as string);
         if (!Array.isArray(imported)) throw new Error('Formato non valido');
-        // Merge: evita duplicati per id
         const existingIds = new Set(savedArticles.map(a => a.id));
         const newOnes = imported.filter(a => !existingIds.has(a.id));
         const merged = [...savedArticles, ...newOnes];
         setSavedArticles(merged);
-        alert(`✅ Importati ${newOnes.length} articoli. ${imported.length - newOnes.length} già presenti.`);
+        saveToStorage(merged);
+
+        if (user && newOnes.length > 0) {
+          setCloudSyncing(true);
+          setCloudStatus(`☁️ Caricamento ${newOnes.length} articoli su Firebase...`);
+          try {
+            await Promise.all(newOnes.map(a => saveArticleToCloud(user.uid, a)));
+            setCloudStatus(`✅ ${newOnes.length} articoli importati su Firebase`);
+          } catch {
+            setCloudStatus('⚠️ Import locale OK, errore Firebase');
+          } finally {
+            setCloudSyncing(false);
+            setTimeout(() => setCloudStatus(null), 4000);
+          }
+        } else {
+          alert(`✅ Importati ${newOnes.length} articoli. ${imported.length - newOnes.length} già presenti.`);
+        }
       } catch {
-        alert('❌ File non valido. Assicurati di importare un file .json esportato da questa app.');
+        alert('❌ File non valido.');
       }
     };
     reader.readAsText(file);
-    e.target.value = ''; // reset
-  }, [savedArticles]);
-
-  const handleDeleteSaved = useCallback(async (id: string) => {
-    if (!user) return;
-    try {
-      await deleteDoc(doc(db, 'articles', id));
-    } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `articles/${id}`);
-    }
-  }, [user]);
+    e.target.value = '';
+  }, [savedArticles, user]);
 
   // ─── Batch stats ─────────────────────────────────────────────────────────────
-
   const batchStats = {
-    total: batchQueue.length,
-    pending: batchQueue.filter(b => b.status === 'pending').length,
+    total:      batchQueue.length,
+    pending:    batchQueue.filter(b => b.status === 'pending').length,
     processing: batchQueue.filter(b => b.status === 'processing').length,
-    completed: batchQueue.filter(b => b.status === 'completed').length,
-    error: batchQueue.filter(b => b.status === 'error').length,
+    completed:  batchQueue.filter(b => b.status === 'completed').length,
+    error:      batchQueue.filter(b => b.status === 'error').length,
   };
 
   // ─── Render ──────────────────────────────────────────────────────────────────
-
   return (
-    <ErrorBoundary>
-      <div className="bg-slate-900 min-h-screen text-slate-200 font-sans pb-20">
-      {/* Storage warning banner */}
+    <div className="bg-slate-900 min-h-screen text-slate-200 font-sans pb-20">
+
+      {/* Banner storage warning */}
       {storageWarning && (
         <div className="bg-amber-900/80 border-b border-amber-600 text-amber-200 text-xs text-center py-2 px-4 flex items-center justify-center gap-3">
           {storageWarning}
           <button onClick={() => setStorageWarning(null)} className="underline">Chiudi</button>
           <button onClick={handleExportDB} className="bg-amber-600 px-3 py-1 rounded-lg font-bold">Esporta ora</button>
+        </div>
+      )}
+
+      {/* Banner cloud status */}
+      {cloudStatus && (
+        <div className={`border-b text-xs text-center py-2 px-4 flex items-center justify-center gap-2 transition-all ${
+          cloudStatus.startsWith('✅') ? 'bg-emerald-900/70 border-emerald-700 text-emerald-200' :
+          cloudStatus.startsWith('⚠️') ? 'bg-amber-900/70 border-amber-700 text-amber-200' :
+          'bg-indigo-900/70 border-indigo-700 text-indigo-200'
+        }`}>
+          {cloudSyncing && <span className="w-3 h-3 border-2 border-t-transparent border-current rounded-full animate-spin" />}
+          {cloudStatus}
         </div>
       )}
 
@@ -354,33 +407,49 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex gap-2 flex-wrap justify-end items-center">
-            {user ? (
-              <div className="flex items-center gap-3 bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-700">
-                <div className="flex flex-col items-end">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase">Utente</span>
-                  <span className="text-xs text-indigo-400 font-medium">{user.displayName || user.email}</span>
-                </div>
+
+            {/* Auth button */}
+            {authLoading ? (
+              <div className="w-5 h-5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+            ) : user ? (
+              <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2">
+                <img src={user.photoURL || ''} className="w-6 h-6 rounded-full" alt="" />
+                <span className="text-xs text-slate-300 font-medium hidden md:block">{user.displayName}</span>
                 <button
-                  onClick={logout}
-                  className="p-2 hover:bg-red-500/20 rounded-lg text-slate-400 hover:text-red-400 transition-all"
-                  title="Esci"
+                  onClick={handleSignOut}
+                  className="text-[10px] text-slate-500 hover:text-red-400 font-bold uppercase ml-1"
                 >
-                  <LogOutIcon className="w-4 h-4" />
+                  Esci
                 </button>
               </div>
             ) : (
               <button
-                onClick={loginWithGoogle}
-                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all shadow-lg shadow-indigo-600/20"
+                onClick={handleSignIn}
+                className="flex items-center gap-2 bg-white hover:bg-slate-100 text-slate-800 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-300 transition-all"
               >
-                <UserIcon className="w-4 h-4" />
+                <svg className="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
                 Accedi con Google
               </button>
             )}
-            {/* Archivio */}
+
+            {/* Import DB */}
+            <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={handleImportDB} />
+            <button
+              onClick={() => importInputRef.current?.click()}
+              className="bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all"
+            >
+              📥 Importa DB
+            </button>
+            <button
+              onClick={handleExportDB}
+              disabled={savedArticles.length === 0}
+              className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all"
+            >
+              📤 Esporta DB
+            </button>
             <button
               onClick={() => setIsLoadModalOpen(true)}
-              className="bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-slate-700 transition-all"
+              className="bg-indigo-700 hover:bg-indigo-600 px-4 py-2 rounded-xl text-xs font-bold uppercase border border-indigo-600 transition-all"
             >
               🗂 Archivio ({savedArticles.length})
             </button>
@@ -389,7 +458,6 @@ const App: React.FC = () => {
 
         {/* Main grid */}
         <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Left column */}
           <div className="lg:col-span-5 space-y-6">
             <ArticleInput
               value={articleText}
@@ -428,12 +496,11 @@ const App: React.FC = () => {
                     disabled={isLoading}
                     className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-lg shadow-indigo-600/20 transition-all"
                   >
-                    {isLoading ? `In corso...` : `OTTIMIZZA (${batchStats.pending})`}
+                    {isLoading ? 'In corso...' : `OTTIMIZZA (${batchStats.pending})`}
                   </button>
                 )}
               </div>
 
-              {/* Progress bar globale */}
               {batchStats.total > 0 && (
                 <div className="mb-4">
                   <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
@@ -451,9 +518,9 @@ const App: React.FC = () => {
                     Aggiungi articoli alla coda per iniziare.
                   </p>
                 ) : (
-                  batchQueue.map((item) => (
+                  batchQueue.map((item, index) => (
                     <div
-                      key={item.id}
+                      key={item.id || `batch-${index}`}
                       onClick={() => setSelectedBatchId(item.id)}
                       className={`p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between group ${
                         selectedBatchId === item.id
@@ -465,14 +532,13 @@ const App: React.FC = () => {
                         <p className="text-xs font-bold text-slate-200 truncate">{item.title}</p>
                         <div className="flex items-center gap-2 mt-1">
                           <span className={`text-[10px] font-bold uppercase ${
-                            item.status === 'completed' ? 'text-green-400' :
+                            item.status === 'completed'  ? 'text-green-400' :
                             item.status === 'processing' ? 'text-indigo-400 animate-pulse' :
-                            item.status === 'error' ? 'text-red-400' : 'text-slate-500'
+                            item.status === 'error'      ? 'text-red-400' : 'text-slate-500'
                           }`}>
                             {item.status === 'processing' ? `${item.progress}%` : item.status}
                           </span>
                         </div>
-                        {/* ✅ Barra progresso per singolo item */}
                         {item.status === 'processing' && (
                           <div className="mt-1.5 w-full h-1 bg-slate-700 rounded-full overflow-hidden">
                             <div
@@ -495,13 +561,14 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          {/* Right column */}
           <div className="lg:col-span-7">
             <SeoOutput
               result={currentResult}
               isLoading={isLoading && currentBatchItem?.status === 'processing'}
               isEnriching={isEnriching}
+              isFixing={isFixing}
               onIncreaseDepth={handleEnrich}
+              onQaFix={handleQaFix}
               error={currentError ?? null}
               onSave={handleSaveArticle}
             />
@@ -516,8 +583,7 @@ const App: React.FC = () => {
         onLoad={handleLoadArticle}
         onDelete={handleDeleteSaved}
       />
-      </div>
-    </ErrorBoundary>
+    </div>
   );
 };
 
