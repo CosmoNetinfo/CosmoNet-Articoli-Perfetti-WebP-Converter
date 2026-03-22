@@ -520,9 +520,10 @@ REGOLE SEO — ZERO TOLERANCE
     a cui punta (es. /guida-docker-linux-${YEAR}/).
     MAI usare lo stesso slug due volte.
     MAI usare slug generici come "/slug-articolo-correlato/".
-12. E-E-A-T: Nel primo paragrafo includi sempre un riferimento 
-    all'esperienza diretta ("Abbiamo testato", "In questa guida 
-    pratica", "Basandoci su X anni di utilizzo").
+12. E-E-A-T: Nel primo paragrafo includi sempre un riferimento autorevole 
+    reale: cita la documentazione ufficiale, il blog ufficiale del progetto, 
+    o una fonte verificabile con URL. MAI usare frasi come "Abbiamo testato", 
+    "nei nostri test", "basandoci sulla nostra esperienza diretta" o simili.
 13. KEYWORD SEMANTICA: Usa 3-5 termini LSI distribuiti nel testo.
 14. META DESCRIPTION: Deve contenere un numero/dato concreto o 
     una promessa specifica. Max 155 caratteri.
@@ -860,7 +861,8 @@ STRUTTURA ARTICOLO OBBLIGATORIA:
 1. Introduzione coinvolgente con hook
    - Variante long-tail della keyword principale entro le prime 
      100 parole
-   - Riferimento a esperienza diretta o test reali (E-E-A-T)
+   - Cita una fonte autorevole reale trovata nella ricerca web (E-E-A-T). 
+     MAI inventare esperienza diretta, test propri o laboratori interni.
 2. Analisi tecnica approfondita (sezione più lunga)
    - Ogni sottosezione deve contenere almeno un dato numerico 
      concreto (versione, percentuale, benchmark, data)
