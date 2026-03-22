@@ -51,6 +51,12 @@ export interface SeoResult {
       type: 'text' | 'list' | 'table';
       subsections?: { heading: string; content: string }[];
     }[];
+    tutorial_guide: {
+      quick_guide: string;
+      steps: { title: string; description: string }[];
+      commands?: string;
+      commands_description?: string;
+    };
     faq: { question: string; answer: string }[];
     conclusion: string;
   };

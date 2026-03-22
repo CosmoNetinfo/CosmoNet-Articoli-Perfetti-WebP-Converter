@@ -31,7 +31,7 @@ export const ArticleInput: React.FC<ArticleInputProps> = ({
     researchSources = [],
 }) => {
     const [topic, setTopic] = React.useState('');
-    const [researchMode, setResearchMode] = React.useState<'standard' | 'cosmonet'>('standard');
+    const [researchMode, setResearchMode] = React.useState<'standard' | 'cosmonet'>('cosmonet');
     const [showSources, setShowSources] = React.useState(false);
 
     const charCount = value.length;
@@ -54,16 +54,6 @@ export const ArticleInput: React.FC<ArticleInputProps> = ({
                 </h2>
                 {/* Modalità ricerca */}
                 <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-700">
-                    <button
-                        onClick={() => setResearchMode('standard')}
-                        className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${
-                            researchMode === 'standard'
-                                ? 'bg-indigo-600 text-white'
-                                : 'text-slate-500 hover:text-slate-300'
-                        }`}
-                    >
-                        STANDARD
-                    </button>
                     <button
                         onClick={() => setResearchMode('cosmonet')}
                         className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${

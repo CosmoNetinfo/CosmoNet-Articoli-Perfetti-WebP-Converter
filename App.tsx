@@ -60,7 +60,7 @@ const App: React.FC = () => {
 
   // ✅ PIPELINE STATE
   const [pipelineJobs, setPipelineJobs]       = useState<PipelineJob[]>([]);
-  const [pipelineAutoMode, setPipelineAutoMode] = useState(false);
+  const [pipelineAutoMode, setPipelineAutoMode] = useState(true);
   const [pipelineProcessingId, setPipelineProcessingId] = useState<string | null>(null);
   const [showPipelinePanel, setShowPipelinePanel] = useState(false);
   const pipelineProcessingIdRef = useRef<string | null>(null);
@@ -105,15 +105,21 @@ const App: React.FC = () => {
     return unsub;
   }, []);
 
-  // ✅ PIPELINE LISTENER — ascolta job con status "brief_ready"
+  // ✅ PIPELINE LISTENER — ascolta job con status "brief_ready" e filtrati per userId
   useEffect(() => {
-    const unsub = listenForStatus('brief_ready', (jobs) => {
+    if (!user) {
+      console.log('[Pipeline Debug] Nessun utente loggato');
+      return;
+    }
+    console.log('[Pipeline Debug] Avvio listener per userId:', user.uid);
+    const unsub = listenForStatus('brief_ready', user.uid, (jobs) => {
+      console.log('[Pipeline Debug] Jobs ricevuti:', jobs.length, jobs);
       setPipelineJobs(jobs);
       // Mostra il pannello automaticamente se arrivano job
       if (jobs.length > 0) setShowPipelinePanel(true);
     });
     return () => unsub();
-  }, []);
+  }, [user]);
 
   // ✅ PIPELINE AUTO-PROCESSING — processa automaticamente se autoMode ON
   useEffect(() => {
@@ -134,9 +140,17 @@ const App: React.FC = () => {
         // Usa optimizeArticleForSeo con il brief come testo di input
         const result = await optimizeArticleForSeo(job.brief);
 
+        // ✅ Step automatico 1: Trova Fonti
+        console.log(`[Pipeline] Trova Fonti in corso...`);
+        const enriched = await enrichArticleDepth(result, '');
+
+        // ✅ Step automatico 2: QA & Fix
+        console.log(`[Pipeline] QA & Fix in corso...`);
+        const fixed = await qaAndFixHtml(enriched);
+
         // Estrai l'HTML generato
-        const htmlToSave = typeof result.htmlContent === 'string' && result.htmlContent
-          ? result.htmlContent
+        const htmlToSave = typeof fixed.htmlContent === 'string' && fixed.htmlContent
+          ? fixed.htmlContent
           : '';
 
         if (!htmlToSave) {
@@ -144,7 +158,19 @@ const App: React.FC = () => {
         }
 
         // Aggiorna Firestore con l'HTML
-        await updateJobWithArticle(job.id!, htmlToSave);
+        await updateJobWithArticle(job.id!, htmlToSave, user?.uid || '');
+
+        // ✅ Salva l'articolo su Firebase Cloud per l'Archivio
+        if (user) {
+          const saved: SavedSeoResult = {
+            ...fixed,
+            htmlContent: htmlToSave,
+            id: `pipeline-${job.id}`,
+            savedAt: new Date().toISOString(),
+            originalArticleText: job.brief,
+          };
+          await saveArticleToCloud(user.uid, saved);
+        }
 
         // Aggiungi anche alla batch queue locale per visibilità
         const newItem: BatchItem = {
@@ -152,7 +178,7 @@ const App: React.FC = () => {
           title: job.title || 'Articolo da Pipeline',
           text: job.brief,
           status: 'completed',
-          result,
+          result: fixed,
           progress: 100,
           createdAt: new Date().toISOString()
         };
@@ -181,18 +207,41 @@ const App: React.FC = () => {
 
     try {
       const result = await optimizeArticleForSeo(job.brief);
-      const htmlToSave = typeof result.htmlContent === 'string' ? result.htmlContent : '';
+
+      // ✅ Step automatico 1: Trova Fonti
+      console.log(`[Pipeline] Trova Fonti in corso...`);
+      const enriched = await enrichArticleDepth(result, '');
+
+      // ✅ Step automatico 2: QA & Fix
+      console.log(`[Pipeline] QA & Fix in corso...`);
+      const fixed = await qaAndFixHtml(enriched);
+
+      const htmlToSave = typeof fixed.htmlContent === 'string' && fixed.htmlContent
+        ? fixed.htmlContent
+        : '';
 
       if (!htmlToSave) throw new Error('HTML generato vuoto');
 
-      await updateJobWithArticle(job.id, htmlToSave);
+      await updateJobWithArticle(job.id, htmlToSave, user?.uid || '');
+
+      // ✅ Salva l'articolo su Firebase Cloud per l'Archivio
+      if (user) {
+        const saved: SavedSeoResult = {
+          ...fixed,
+          htmlContent: htmlToSave,
+          id: `pipeline-${job.id}`,
+          savedAt: new Date().toISOString(),
+          originalArticleText: job.brief,
+        };
+        await saveArticleToCloud(user.uid, saved);
+      }
 
       const newItem: BatchItem = {
         id: `pipeline-${job.id}`,
         title: job.title || 'Articolo da Pipeline',
         text: job.brief,
         status: 'completed',
-        result,
+        result: fixed,
         progress: 100,
         createdAt: new Date().toISOString()
       };
